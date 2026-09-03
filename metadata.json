@@ -1,0 +1,8 @@
+{
+  "name": "Weekly MPS correct ",
+  "description": "Monthly MRP calculation engine, BOM dependency mapping, stock level tracking, RMPM dispatch schedule management, and role-based views for planners, warehouse, and production.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
