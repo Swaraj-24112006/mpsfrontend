@@ -353,17 +353,18 @@ export function calculateProratedWeeklyBreakdown(
   monthlyTarget: number,
   weeks: WeekDefinition[]
 ): Record<string, number> {
-  const totalDays = weeks.reduce((sum, w) => sum + w.daysCount, 0);
-  if (totalDays === 0 || weeks.length === 0) return {};
+  const totalWorkingDays = weeks.reduce((sum, w) => sum + (w.workingDays || w.daysCount), 0);
+  if (totalWorkingDays === 0 || weeks.length === 0) return {};
 
   const breakdown: Record<string, number> = {};
   let accumulated = 0;
 
   weeks.forEach((week, idx) => {
+    const workingDays = week.workingDays || week.daysCount;
     if (idx === weeks.length - 1) {
       breakdown[week.id] = Math.max(0, monthlyTarget - accumulated);
     } else {
-      const calculated = Math.round(monthlyTarget * (week.daysCount / totalDays));
+      const calculated = Math.round(monthlyTarget * (workingDays / totalWorkingDays));
       breakdown[week.id] = calculated;
       accumulated += calculated;
     }

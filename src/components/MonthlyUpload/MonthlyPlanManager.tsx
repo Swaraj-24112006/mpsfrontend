@@ -185,7 +185,7 @@ export const MonthlyPlanManager: React.FC<MonthlyPlanManagerProps> = ({
     const lines = csvInput.trim().split('\n');
     const parsed: MonthlyPlanItem[] = [];
 
-    // Parse each line (FG Code, FG Description, Customer, Monthly Target, UOM)
+    // Parse each line (FG Code, Customer, Monthly Target)
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i].trim();
       if (!line) continue;
@@ -198,22 +198,23 @@ export const MonthlyPlanManager: React.FC<MonthlyPlanManagerProps> = ({
       const delimiter = line.includes('\t') ? '\t' : ',';
       const parts = line.split(delimiter).map((s) => s.replace(/^"|"$/g, '').trim());
 
-      if (parts.length >= 2) {
+      if (parts.length >= 3) {
         const fgCode = parts[0];
-        const fgDesc = parts.length >= 3 ? parts[1] : `Product ${fgCode}`;
-        const customer = parts.length >= 4 ? parts[2] : 'OEM Customer';
-        const targetStr = parts.length >= 4 ? parts[3] : parts[1];
-        const target = parseFloat(targetStr.replace(/,/g, '')) || 0;
+        const customer = parts[1];
+        const target = parseFloat(parts[2].replace(/,/g, '')) || 0;
 
         if (fgCode && target > 0) {
+          // Auto-lookup description and uom
+          const bomMatch = boms.find(b => b.fgCode === fgCode);
+          
           parsed.push({
             id: `mp-${Date.now()}-${i}`,
             fgCode,
-            fgDescription: fgDesc,
+            fgDescription: bomMatch ? bomMatch.fgDescription : `Product ${fgCode}`,
             customerName: customer,
             month: selectedMonth,
             monthlyTarget: target,
-            uom: 'PC',
+            uom: bomMatch ? bomMatch.uom : 'PC',
             weeklyBreakdown: calculateProratedWeeklyBreakdown(target, monthWeeks)
           });
         }
@@ -629,7 +630,7 @@ export const MonthlyPlanManager: React.FC<MonthlyPlanManagerProps> = ({
               </div>
 
               <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 text-xs text-blue-900">
-                <span className="font-semibold">Expected Columns:</span> FG Part Number (starts with 7), Description, Customer Name, Monthly Target Qty.
+                <span className="font-semibold">Expected Columns:</span> FG Code, Customer Name, Monthly Target Qty.
               </div>
 
               <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-200">

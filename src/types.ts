@@ -102,6 +102,7 @@ export interface WeekDefinition {
   startDate: string; // YYYY-MM-DD
   endDate: string; // YYYY-MM-DD
   daysCount: number; // Number of days in that week bucket (e.g. 9 days)
+  holidayDays?: number; // Optional holiday/off days
   workingDays?: number; // Optional working days (e.g. 8 days)
 }
 

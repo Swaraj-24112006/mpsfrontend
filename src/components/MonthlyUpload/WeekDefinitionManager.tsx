@@ -36,6 +36,7 @@ export const WeekDefinitionManager: React.FC<WeekDefinitionManagerProps> = ({
   const [formWeekNo, setFormWeekNo] = useState<number>(1);
   const [formStartDate, setFormStartDate] = useState('');
   const [formEndDate, setFormEndDate] = useState('');
+  const [formHolidayDays, setFormHolidayDays] = useState<number>(0);
   const [formLabel, setFormLabel] = useState('');
 
   const currentMonthWeeks = weeks
@@ -64,6 +65,7 @@ export const WeekDefinitionManager: React.FC<WeekDefinitionManagerProps> = ({
       setFormWeekNo(existing.weekNo);
       setFormStartDate(existing.startDate);
       setFormEndDate(existing.endDate);
+      setFormHolidayDays(existing.holidayDays || 0);
       setFormLabel(existing.weekLabel);
     } else {
       setEditingWeek(null);
@@ -72,6 +74,7 @@ export const WeekDefinitionManager: React.FC<WeekDefinitionManagerProps> = ({
       setFormWeekNo(nextNo);
       setFormStartDate(`${selectedMonth}-01`);
       setFormEndDate(`${selectedMonth}-07`);
+      setFormHolidayDays(0);
       setFormLabel(`Week ${nextNo}`);
     }
     setIsAddModalOpen(true);
@@ -107,7 +110,8 @@ export const WeekDefinitionManager: React.FC<WeekDefinitionManagerProps> = ({
               startDate: formStartDate,
               endDate: formEndDate,
               daysCount,
-              workingDays: Math.max(1, daysCount - 1)
+              holidayDays: formHolidayDays,
+              workingDays: Math.max(1, daysCount - formHolidayDays)
             }
           : w
       );
@@ -121,7 +125,8 @@ export const WeekDefinitionManager: React.FC<WeekDefinitionManagerProps> = ({
         startDate: formStartDate,
         endDate: formEndDate,
         daysCount,
-        workingDays: Math.max(1, daysCount - 1)
+        holidayDays: formHolidayDays,
+        workingDays: Math.max(1, daysCount - formHolidayDays)
       };
       onUpdateWeeks([...weeks, newWeek]);
     }
@@ -558,6 +563,20 @@ export const WeekDefinitionManager: React.FC<WeekDefinitionManagerProps> = ({
                     className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 font-mono"
                   />
                 </div>
+              </div>
+              
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  Holiday/Off Days *
+                </label>
+                <input
+                  type="number"
+                  min="0"
+                  required
+                  value={formHolidayDays}
+                  onChange={(e) => setFormHolidayDays(parseInt(e.target.value) || 0)}
+                  className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 font-mono"
+                />
               </div>
 
               <div>
