@@ -23,7 +23,10 @@ import {
   Zap,
   Truck,
   History,
-  BarChart3
+  BarChart3,
+  Package,
+  GitFork,
+  Share2
 } from 'lucide-react';
 
 export type SubViewTab =
@@ -38,6 +41,10 @@ export type SubViewTab =
   | 'monday_mb51_report'
   | 'monday_stock_report'
   | 'master_bom'
+  | 'master_fg_headers'
+  | 'master_components'
+  | 'master_exploded_bom'
+  | 'master_common_components'
   | 'master_vendor_buyer'
   | 'audit_log';
 
@@ -410,7 +417,59 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 title="BOM Master (Finished Goods & Components)"
               >
                 <Layers className="w-4 h-4 shrink-0 text-amber-400" />
-                {!isCollapsed && <span>1. BOM Master</span>}
+                {!isCollapsed && <span>1. BOM Master Lines</span>}
+              </button>
+
+              <button
+                onClick={() => onSelectSubView('master_fg_headers')}
+                className={`w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-xs font-medium transition-colors ${
+                  activeSubView === 'master_fg_headers'
+                    ? 'bg-amber-600 text-white font-semibold shadow-sm'
+                    : 'text-slate-300 hover:text-white hover:bg-slate-800/60'
+                }`}
+                title="Finished Goods Header Master"
+              >
+                <Boxes className="w-4 h-4 shrink-0 text-amber-400" />
+                {!isCollapsed && <span>2. FG Headers (Finished Goods)</span>}
+              </button>
+
+              <button
+                onClick={() => onSelectSubView('master_components')}
+                className={`w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-xs font-medium transition-colors ${
+                  activeSubView === 'master_components'
+                    ? 'bg-amber-600 text-white font-semibold shadow-sm'
+                    : 'text-slate-300 hover:text-white hover:bg-slate-800/60'
+                }`}
+                title="Raw Materials & Packaging Components Master"
+              >
+                <Package className="w-4 h-4 shrink-0 text-amber-400" />
+                {!isCollapsed && <span>3. RM/PM Component Master</span>}
+              </button>
+
+              <button
+                onClick={() => onSelectSubView('master_exploded_bom')}
+                className={`w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-xs font-medium transition-colors ${
+                  activeSubView === 'master_exploded_bom'
+                    ? 'bg-amber-600 text-white font-semibold shadow-sm'
+                    : 'text-slate-300 hover:text-white hover:bg-slate-800/60'
+                }`}
+                title="Exploded BOM & Stock Trace"
+              >
+                <GitFork className="w-4 h-4 shrink-0 text-amber-400" />
+                {!isCollapsed && <span>4. Exploded BOM & Stock Trace</span>}
+              </button>
+
+              <button
+                onClick={() => onSelectSubView('master_common_components')}
+                className={`w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-xs font-medium transition-colors ${
+                  activeSubView === 'master_common_components'
+                    ? 'bg-amber-600 text-white font-semibold shadow-sm'
+                    : 'text-slate-300 hover:text-white hover:bg-slate-800/60'
+                }`}
+                title="Common Components Matrix"
+              >
+                <Share2 className="w-4 h-4 shrink-0 text-amber-400" />
+                {!isCollapsed && <span>5. Common Parts Matrix</span>}
               </button>
 
               <button
@@ -423,7 +482,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 title="Vendor and Buyer Relationship Master"
               >
                 <Users className="w-4 h-4 shrink-0 text-amber-400" />
-                {!isCollapsed && <span>2. Vendor & Buyer Master</span>}
+                {!isCollapsed && <span>6. Vendor & Buyer Master</span>}
               </button>
             </div>
           )}

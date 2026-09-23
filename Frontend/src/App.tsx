@@ -31,7 +31,13 @@ import { Sidebar, SubViewTab } from './components/Sidebar';
 
 // Master Data Components
 import { BOMMasterManager } from './components/MasterData/BOMMasterManager';
+import { FGHeaderManager } from './components/MasterData/FGHeaderManager';
+import { ComponentManager } from './components/MasterData/ComponentManager';
+import { ExplodedBOMViewer } from './components/MasterData/ExplodedBOMViewer';
+import { CommonComponentsDashboard } from './components/MasterData/CommonComponentsDashboard';
 import { VendorBuyerManager } from './components/MasterData/VendorBuyerManager';
+import bomService from './services/bomService';
+import vendorBuyerService from './services/vendorBuyerService';
 
 // Monthly Upload Components
 import { WeekDefinitionManager } from './components/MonthlyUpload/WeekDefinitionManager';
@@ -172,6 +178,54 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem('sap_delivery_change_logs', JSON.stringify(deliveryScheduleChangeLogs));
   }, [deliveryScheduleChangeLogs]);
+
+  // Hydrate master data from backend PostgreSQL API on mount
+  useEffect(() => {
+    bomService.listAll()
+      .then((items) => {
+        if (items && items.length > 0) {
+          setBoms(
+            items.map((dto) => ({
+              id: String(dto.id),
+              fgCode: dto.fg_code,
+              fgDescription: dto.fg_description,
+              componentCode: dto.component_code,
+              componentDescription: dto.component_description,
+              qty: dto.qty,
+              uom: dto.uom,
+              category: dto.category as 'RM' | 'PM',
+            }))
+          );
+        }
+      })
+      .catch(() => {
+        /* Non-fatal: fallback to existing localStorage or seed data */
+      });
+
+    vendorBuyerService.listAll()
+      .then((items) => {
+        if (items && items.length > 0) {
+          setVendorBuyers(
+            items.map((dto) => ({
+              id: String(dto.id),
+              vendorCode: dto.vendor_code,
+              vendorName: dto.vendor_name,
+              buyerName: dto.buyer_name,
+              buyerEmail: dto.buyer_email || '',
+              buyerPhone: dto.buyer_phone || '',
+              category: dto.category || 'RM',
+              suppliedComponents: dto.supplied_components || [],
+              leadTimeDays: dto.lead_time_days || 7,
+              city: dto.city || '',
+              gstNo: dto.gst_no || '',
+            }))
+          );
+        }
+      })
+      .catch(() => {
+        /* Non-fatal */
+      });
+  }, []);
 
   // Compute Critical RM Shortages Count for Badges
   const rmSummaries = computeRMWeeklyRequirements(
@@ -430,12 +484,32 @@ export default function App() {
               />
             )}
 
-            {/* View 7: Master Data - BOM Master */}
+            {/* View 7: Master Data - BOM Master Lines */}
             {activeSubView === 'master_bom' && (
               <BOMMasterManager
                 boms={boms}
                 onUpdateBoms={setBoms}
               />
+            )}
+
+            {/* View 7b: Master Data - Finished Goods Headers */}
+            {activeSubView === 'master_fg_headers' && (
+              <FGHeaderManager />
+            )}
+
+            {/* View 7c: Master Data - RM/PM Components Master */}
+            {activeSubView === 'master_components' && (
+              <ComponentManager />
+            )}
+
+            {/* View 7d: Master Data - Exploded BOM & Stock Trace */}
+            {activeSubView === 'master_exploded_bom' && (
+              <ExplodedBOMViewer />
+            )}
+
+            {/* View 7e: Master Data - Common Components Matrix */}
+            {activeSubView === 'master_common_components' && (
+              <CommonComponentsDashboard />
             )}
 
             {/* View 8: Master Data - Vendor & Buyer Relationship */}
