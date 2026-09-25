@@ -73,6 +73,13 @@ export interface ExplodedBOMComponent {
   vendor_name: string | null;
   buyer_name: string | null;
   lead_time_days: number;
+  is_multi_vendor?: boolean;
+  suppliers?: {
+    vendor_code: string;
+    vendor_name: string;
+    buyer_name: string;
+    lead_time_days: number;
+  }[];
 }
 
 export interface ExplodedBOMResponse {

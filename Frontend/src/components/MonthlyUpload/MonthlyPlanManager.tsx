@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { MonthlyPlanItem, WeekDefinition, BOMItem } from '../../types';
 import { calculateProratedWeeklyBreakdown } from '../../data/sapInitialData';
+import { monthlyPlanService } from '../../services/monthlyPlanService';
 
 interface MonthlyPlanManagerProps {
   monthlyPlans: MonthlyPlanItem[];
@@ -38,6 +39,9 @@ export const MonthlyPlanManager: React.FC<MonthlyPlanManagerProps> = ({
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
   const [editingPlan, setEditingPlan] = useState<MonthlyPlanItem | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [isUploading, setIsUploading] = useState(false);
 
   // Form State
   const [formData, setFormData] = useState<Partial<MonthlyPlanItem>>({
@@ -64,6 +68,25 @@ export const MonthlyPlanManager: React.FC<MonthlyPlanManagerProps> = ({
       boms.map((b) => [b.fgCode, { code: b.fgCode, desc: b.fgDescription }])
     ).values()
   );
+
+  // Hydrate plans from backend on month change
+  React.useEffect(() => {
+    let isMounted = true;
+    monthlyPlanService.getMonthlyPlans(selectedMonth)
+      .then((plans) => {
+        if (isMounted && plans.length > 0) {
+          const otherMonths = monthlyPlans.filter((p) => p.month !== selectedMonth);
+          onUpdateMonthlyPlans([...otherMonths, ...plans]);
+        }
+      })
+      .catch((err) => {
+        console.warn('Could not fetch monthly plans from backend:', err);
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [selectedMonth]);
 
   const currentMonthPlans = monthlyPlans.filter((p) => p.month === selectedMonth);
 
@@ -113,7 +136,7 @@ export const MonthlyPlanManager: React.FC<MonthlyPlanManagerProps> = ({
     });
   };
 
-  const handleSavePlan = (e: React.FormEvent) => {
+  const handleSavePlan = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!formData.fgCode || !formData.monthlyTarget) {
       alert('Please select FG code and enter monthly target.');
@@ -121,38 +144,74 @@ export const MonthlyPlanManager: React.FC<MonthlyPlanManagerProps> = ({
     }
 
     const targetQty = Number(formData.monthlyTarget) || 0;
-    const weeklyBreakdown = calculateProratedWeeklyBreakdown(targetQty, monthWeeks);
+    setIsSaving(true);
 
-    if (editingPlan) {
-      const updated = monthlyPlans.map((p) =>
-        p.id === editingPlan.id
-          ? ({
-              ...p,
-              ...formData,
-              monthlyTarget: targetQty,
-              weeklyBreakdown
-            } as MonthlyPlanItem)
-          : p
-      );
-      onUpdateMonthlyPlans(updated);
-    } else {
-      const newPlan: MonthlyPlanItem = {
-        id: `mp-${Date.now()}`,
-        fgCode: formData.fgCode,
-        fgDescription: formData.fgDescription || 'Finished Good',
-        customerName: formData.customerName || 'OEM Customer',
-        month: selectedMonth,
-        monthlyTarget: targetQty,
-        uom: formData.uom || 'PC',
-        weeklyBreakdown,
-        customNotes: formData.customNotes || ''
-      };
-      onUpdateMonthlyPlans([...monthlyPlans, newPlan]);
+    try {
+      if (editingPlan) {
+        let savedPlan: MonthlyPlanItem;
+        try {
+          savedPlan = await monthlyPlanService.updateMonthlyPlan(editingPlan.id, {
+            monthly_target: targetQty,
+            customer_name: formData.customerName,
+            custom_notes: formData.customNotes,
+            uom: formData.uom,
+          });
+        } catch {
+          // Fallback to local calculation if offline
+          const weeklyBreakdown = calculateProratedWeeklyBreakdown(targetQty, monthWeeks);
+          savedPlan = {
+            ...editingPlan,
+            ...formData,
+            monthlyTarget: targetQty,
+            weeklyBreakdown
+          } as MonthlyPlanItem;
+        }
+
+        const updated = monthlyPlans.map((p) =>
+          p.id === editingPlan.id ? savedPlan : p
+        );
+        onUpdateMonthlyPlans(updated);
+      } else {
+        let newPlan: MonthlyPlanItem;
+        try {
+          newPlan = await monthlyPlanService.createMonthlyPlan({
+            fg_code: formData.fgCode,
+            month: selectedMonth,
+            monthly_target: targetQty,
+            customer_name: formData.customerName,
+            custom_notes: formData.customNotes,
+            uom: formData.uom || 'PC'
+          });
+        } catch (apiErr: any) {
+          const msg = apiErr?.message || 'Failed to save monthly plan on server';
+          alert(msg);
+          setIsSaving(false);
+          return;
+        }
+
+        onUpdateMonthlyPlans([...monthlyPlans, newPlan]);
+      }
+      setIsAddModalOpen(false);
+    } catch (err: any) {
+      alert(err?.message || 'Error saving monthly plan');
+    } finally {
+      setIsSaving(false);
     }
-    setIsAddModalOpen(false);
   };
 
-  const handleRecalculateAllProrated = () => {
+  const handleRecalculateAllProrated = async () => {
+    try {
+      const refreshed = await monthlyPlanService.getMonthlyPlans(selectedMonth);
+      if (refreshed.length > 0) {
+        const otherMonths = monthlyPlans.filter((p) => p.month !== selectedMonth);
+        onUpdateMonthlyPlans([...otherMonths, ...refreshed]);
+        alert(`Successfully synchronized ${refreshed.length} plan(s) from server.`);
+        return;
+      }
+    } catch {
+      // Fallback
+    }
+
     if (monthWeeks.length === 0) {
       alert('Please define weeks for this month first under "Define Week No."');
       return;
@@ -169,68 +228,73 @@ export const MonthlyPlanManager: React.FC<MonthlyPlanManagerProps> = ({
     onUpdateMonthlyPlans(updated);
   };
 
-  const handleDeletePlan = (id: string) => {
+  const handleDeletePlan = async (id: string) => {
     if (window.confirm('Delete this FG monthly plan?')) {
-      onUpdateMonthlyPlans(monthlyPlans.filter((p) => p.id !== id));
+      try {
+        await monthlyPlanService.deleteMonthlyPlan(id).catch(() => {});
+      } finally {
+        onUpdateMonthlyPlans(monthlyPlans.filter((p) => p.id !== id));
+      }
     }
   };
 
-  const handleCSVUpload = (e: React.FormEvent) => {
+  const handleDownloadTemplate = () => {
+    const csvContent =
+      'FG Code,FG Description,Customer Name,Monthly Target,UOM,Notes\n' +
+      '7.06496.03.0,Vacuum Pump Panther 2.0L,Tata Motors PV & EV,10000,PC,Harrier & Safari schedule\n' +
+      '7.09629.01.0,FAM B Tandem Vacuum Pump,Mahindra & Mahindra Auto,8000,PC,Scorpio-N / XUV700 ramp-up\n' +
+      '7.02551.11.0,Variable Flow Oil Pump (Gen 3),Hyundai Motor India,6200,PC,1.5L Turbo TGDi program\n';
+
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', `Monthly_Plan_Template_${selectedMonth}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const handleCSVUpload = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!csvInput.trim()) {
-      alert('Please paste CSV or tab-separated data');
+    if (!selectedFile && !csvInput.trim()) {
+      alert('Please select a file (.csv, .xlsx, .txt) or paste data into the text box.');
       return;
     }
 
-    const lines = csvInput.trim().split('\n');
-    const parsed: MonthlyPlanItem[] = [];
-
-    // Parse each line (FG Code, Customer, Monthly Target)
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i].trim();
-      if (!line) continue;
-      // Skip header if contains 'fg' or 'code' or 'target'
-      if (i === 0 && (line.toLowerCase().includes('code') || line.toLowerCase().includes('target'))) {
-        continue;
-      }
-
-      // Supports comma or tab separation
-      const delimiter = line.includes('\t') ? '\t' : ',';
-      const parts = line.split(delimiter).map((s) => s.replace(/^"|"$/g, '').trim());
-
-      if (parts.length >= 3) {
-        const fgCode = parts[0];
-        const customer = parts[1];
-        const target = parseFloat(parts[2].replace(/,/g, '')) || 0;
-
-        if (fgCode && target > 0) {
-          // Auto-lookup description and uom
-          const bomMatch = boms.find(b => b.fgCode === fgCode);
-          
-          parsed.push({
-            id: `mp-${Date.now()}-${i}`,
-            fgCode,
-            fgDescription: bomMatch ? bomMatch.fgDescription : `Product ${fgCode}`,
-            customerName: customer,
-            month: selectedMonth,
-            monthlyTarget: target,
-            uom: bomMatch ? bomMatch.uom : 'PC',
-            weeklyBreakdown: calculateProratedWeeklyBreakdown(target, monthWeeks)
-          });
-        }
-      }
-    }
-
-    if (parsed.length === 0) {
-      alert('No valid records found. Format: FG Code, FG Description, Customer Name, Monthly Target');
+    if (monthWeeks.length === 0) {
+      alert(`No week definitions exist for ${selectedMonth}. Please generate weeks under "Define Week No." first.`);
       return;
     }
 
-    // Merge or replace for this month
-    const otherMonthPlans = monthlyPlans.filter((p) => p.month !== selectedMonth);
-    onUpdateMonthlyPlans([...otherMonthPlans, ...parsed]);
-    setIsUploadModalOpen(false);
-    setCsvInput('');
+    setIsUploading(true);
+    try {
+      const payload = selectedFile || csvInput;
+      const resp = await monthlyPlanService.uploadMonthlyPlan(selectedMonth, payload);
+
+      // Hydrate newly updated plans from server
+      const refreshedPlans = await monthlyPlanService.getMonthlyPlans(selectedMonth);
+      if (refreshedPlans.length > 0) {
+        const otherMonths = monthlyPlans.filter((p) => p.month !== selectedMonth);
+        onUpdateMonthlyPlans([...otherMonths, ...refreshedPlans]);
+      }
+
+      alert(
+        `Monthly Plan upload complete for ${selectedMonth}!\n` +
+        `• Successfully Imported: ${resp.imported_rows} plan(s)\n` +
+        `• Skipped / Errors: ${resp.error_rows}` +
+        (resp.errors && resp.errors.length > 0
+          ? `\n\nDetails:\n` + resp.errors.map(err => `Row ${err.row_index}: ${err.reason}`).slice(0, 5).join('\n')
+          : '')
+      );
+      setIsUploadModalOpen(false);
+      setSelectedFile(null);
+      setCsvInput('');
+    } catch (err: any) {
+      alert(err?.message || 'Failed to upload monthly plan.');
+    } finally {
+      setIsUploading(false);
+    }
   };
 
   const handleExportCSV = () => {
@@ -602,50 +666,122 @@ export const MonthlyPlanManager: React.FC<MonthlyPlanManagerProps> = ({
         </div>
       )}
 
-      {/* Upload CSV Modal */}
+      {/* Upload CSV / Excel Modal */}
       {isUploadModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <div className="bg-white rounded-xl shadow-xl max-w-xl w-full p-6 border border-slate-200 animate-in fade-in zoom-in-95 duration-150">
-            <h2 className="text-lg font-bold text-slate-900 mb-2 flex items-center gap-2">
-              <Upload className="w-5 h-5 text-emerald-600" />
-              Upload Monthly Plan (CSV / Excel Paste)
-            </h2>
+          <div className="bg-white rounded-xl shadow-xl max-w-xl w-full p-6 border border-slate-200 animate-in fade-in zoom-in-95 duration-150 max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between mb-2">
+              <h2 className="text-lg font-bold text-slate-900 flex items-center gap-2">
+                <Upload className="w-5 h-5 text-emerald-600" />
+                Upload Monthly Plan for {selectedMonth}
+              </h2>
+              <button
+                type="button"
+                onClick={handleDownloadTemplate}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-emerald-700 bg-emerald-50 hover:bg-emerald-100 rounded-lg border border-emerald-200 transition-colors"
+              >
+                <Download className="w-3.5 h-3.5" />
+                Download Template
+              </button>
+            </div>
             <p className="text-xs text-slate-500 mb-4">
-              Paste your spreadsheet rows below. The system will automatically calculate the prorated weekly numbers based on the days in each week for {selectedMonth}.
+              Upload a <strong>.csv</strong> or <strong>.xlsx</strong> file, or paste table text below. The server will automatically validate codes, store the file, and compute working-day prorated breakdowns.
             </p>
 
             <form onSubmit={handleCSVUpload} className="space-y-4">
+              {/* File Upload Section */}
+              <div className="border-2 border-dashed border-slate-300 rounded-lg p-4 text-center hover:border-emerald-500 transition-colors bg-slate-50/50">
+                <input
+                  type="file"
+                  id="monthly-plan-file-input"
+                  accept=".csv, .xlsx, .xlsm, .txt"
+                  className="hidden"
+                  onChange={(e) => {
+                    if (e.target.files && e.target.files[0]) {
+                      setSelectedFile(e.target.files[0]);
+                    }
+                  }}
+                />
+                <label
+                  htmlFor="monthly-plan-file-input"
+                  className="cursor-pointer flex flex-col items-center justify-center gap-1"
+                >
+                  <FileSpreadsheet className="w-8 h-8 text-emerald-600 mb-1" />
+                  <span className="text-xs font-semibold text-slate-700">
+                    {selectedFile ? selectedFile.name : 'Click to select CSV or Excel file (.csv, .xlsx)'}
+                  </span>
+                  <span className="text-[11px] text-slate-400">
+                    {selectedFile ? `${(selectedFile.size / 1024).toFixed(1)} KB` : 'Or drag and drop your file here'}
+                  </span>
+                </label>
+                {selectedFile && (
+                  <button
+                    type="button"
+                    onClick={() => setSelectedFile(null)}
+                    className="mt-2 text-[11px] text-rose-600 hover:underline"
+                  >
+                    Clear selected file
+                  </button>
+                )}
+              </div>
+
+              {/* Paste Text Section */}
               <div>
                 <label className="block text-xs font-semibold text-slate-700 mb-1">
-                  CSV or Tab-Separated Data
+                  Or Paste CSV / Tab-Separated Data
                 </label>
                 <textarea
-                  rows={8}
-                  required
+                  rows={5}
                   value={csvInput}
                   onChange={(e) => setCsvInput(e.target.value)}
-                  placeholder={`FG Code,FG Description,Customer,Monthly Target\n7.06496.03.0,Vacuum Pump Panther 2.0L,Tata Motors,10000\n7.09629.01.0,FAM B Tandem Vacuum Pump,Mahindra Auto,8000\n7.02551.11.0,Variable Flow Oil Pump,Hyundai India,6200`}
+                  placeholder={`FG Code,FG Description,Customer,Monthly Target\n7.06496.03.0,Vacuum Pump Panther 2.0L,Tata Motors,10000\n7.09629.01.0,FAM B Tandem Pump,Mahindra Auto,8000`}
                   className="w-full p-3 text-xs border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500 font-mono"
+                  disabled={selectedFile !== null}
                 />
               </div>
 
-              <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 text-xs text-blue-900">
-                <span className="font-semibold">Expected Columns:</span> FG Code, Customer Name, Monthly Target Qty.
+              <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 text-xs text-blue-900 space-y-1">
+                <div className="font-semibold flex items-center gap-1.5">
+                  <Info className="w-3.5 h-3.5 text-blue-600" />
+                  Ingestion Rules:
+                </div>
+                <ul className="list-disc list-inside text-[11px] text-blue-800 space-y-0.5">
+                  <li>FG code must start with <strong>7</strong> (SAP Finished Goods rule).</li>
+                  <li>Monthly target must be greater than 0.</li>
+                  <li>Original file is stored and audited with batch ID.</li>
+                  <li>Weekly proration is calculated server-side based on working days.</li>
+                </ul>
               </div>
 
               <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-200">
                 <button
                   type="button"
-                  onClick={() => setIsUploadModalOpen(false)}
+                  onClick={() => {
+                    setIsUploadModalOpen(false);
+                    setSelectedFile(null);
+                    setCsvInput('');
+                  }}
                   className="px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-100 rounded-lg transition-colors"
+                  disabled={isUploading}
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2 text-sm font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg shadow-sm transition-colors"
+                  disabled={isUploading}
+                  className="inline-flex items-center gap-2 px-5 py-2 text-sm font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg shadow-sm transition-colors disabled:opacity-50"
                 >
-                  Import & Prorate
+                  {isUploading ? (
+                    <>
+                      <RefreshCw className="w-4 h-4 animate-spin" />
+                      Uploading & Prorating...
+                    </>
+                  ) : (
+                    <>
+                      <Upload className="w-4 h-4" />
+                      Import & Prorate
+                    </>
+                  )}
                 </button>
               </div>
             </form>

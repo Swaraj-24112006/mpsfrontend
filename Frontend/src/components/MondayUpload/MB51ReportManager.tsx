@@ -15,10 +15,12 @@ import {
   AlertCircle,
   Calendar,
   Layers,
-  Trash2
+  Trash2,
+  Loader2
 } from 'lucide-react';
 import { MB51TransactionItem, MB51Classification, WeekDefinition } from '../../types';
 import { getWeekForTransaction } from '../../utils/weeklyMrpEngine';
+import { mb51Service } from '../../services/mb51Service';
 
 interface MB51ReportManagerProps {
   mb51List: MB51TransactionItem[];
@@ -40,6 +42,8 @@ export const MB51ReportManager: React.FC<MB51ReportManagerProps> = ({
   const [selectedWeekFilter, setSelectedWeekFilter] = useState<string>('ALL');
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [uploadWarnings, setUploadWarnings] = useState<string[]>([]);
 
   // Form State
   const [formData, setFormData] = useState<Partial<MB51TransactionItem>>({
@@ -111,120 +115,172 @@ export const MB51ReportManager: React.FC<MB51ReportManagerProps> = ({
     .filter((tx) => tx.classification === 'FG_DISPATCH')
     .reduce((sum, tx) => sum + tx.quantity, 0);
 
-  const handleSaveTransaction = (e: React.FormEvent) => {
+  const handleSaveTransaction = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!formData.materialDocument || !formData.partNumber || !formData.quantity) {
       alert('Please fill material document, part number, and quantity.');
       return;
     }
 
-    const classification = deriveClassification(
-      formData.movementType || '101',
-      formData.partNumber || ''
-    );
+    const mvt = formData.movementType || '101';
+    if (mvt !== '101' && mvt !== '601') {
+      alert("Manual transaction creation only supports movement types '101' and '601'.");
+      return;
+    }
 
-    const mappedWeek = getWeekForTransaction(
-      { ...formData, classification } as MB51TransactionItem,
-      weeks
-    );
+    setIsSubmitting(true);
+    try {
+      const createdItem = await mb51Service.createTransaction({
+        materialDocument: formData.materialDocument.trim(),
+        postingDate: formData.postingDate || new Date().toISOString().slice(0, 10),
+        movementType: mvt as '101' | '601',
+        partNumber: formData.partNumber.trim(),
+        materialDescription: formData.materialDescription?.trim() || 'Material Item',
+        quantity: Number(formData.quantity) || 0,
+        uom: formData.uom || 'PC',
+        storageLocation: formData.storageLocation || 'SL01',
+        plant: formData.plant || '1001',
+        vendorOrCustomer: formData.vendorOrCustomer?.trim() || '',
+        poOrOrderNumber: formData.poOrOrderNumber?.trim() || ''
+      });
+      onUpdateMB51([createdItem, ...mb51List]);
+      setIsAddModalOpen(false);
+    } catch (err: any) {
+      console.warn('Backend create failed, falling back to local creation:', err);
+      const classification = deriveClassification(mvt, formData.partNumber || '');
+      const mappedWeek = getWeekForTransaction(
+        { ...formData, classification } as MB51TransactionItem,
+        weeks
+      );
 
-    const newItem: MB51TransactionItem = {
-      id: `mb51-${Date.now()}`,
-      materialDocument: formData.materialDocument.trim(),
-      postingDate: formData.postingDate || new Date().toISOString().slice(0, 10),
-      movementType: formData.movementType || '101',
-      partNumber: formData.partNumber.trim(),
-      materialDescription: formData.materialDescription?.trim() || 'Material Item',
-      quantity: Number(formData.quantity) || 0,
-      uom: formData.uom || 'PC',
-      storageLocation: formData.storageLocation || 'SL01',
-      plant: formData.plant || '1001',
-      vendorOrCustomer: formData.vendorOrCustomer?.trim() || '',
-      poOrOrderNumber: formData.poOrOrderNumber?.trim() || '',
-      classification,
-      weekId: mappedWeek?.id
-    };
+      const newItem: MB51TransactionItem = {
+        id: `mb51-${Date.now()}`,
+        materialDocument: formData.materialDocument.trim(),
+        postingDate: formData.postingDate || new Date().toISOString().slice(0, 10),
+        movementType: mvt,
+        partNumber: formData.partNumber.trim(),
+        materialDescription: formData.materialDescription?.trim() || 'Material Item',
+        quantity: Number(formData.quantity) || 0,
+        uom: formData.uom || 'PC',
+        storageLocation: formData.storageLocation || 'SL01',
+        plant: formData.plant || '1001',
+        vendorOrCustomer: formData.vendorOrCustomer?.trim() || '',
+        poOrOrderNumber: formData.poOrOrderNumber?.trim() || '',
+        classification,
+        weekId: mappedWeek?.id
+      };
 
-    onUpdateMB51([newItem, ...mb51List]);
-    setIsAddModalOpen(false);
+      onUpdateMB51([newItem, ...mb51List]);
+      setIsAddModalOpen(false);
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
-  const handleCSVUpload = (e: React.FormEvent) => {
+  const handleCSVUpload = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!csvInput.trim()) {
       alert('Please paste CSV or tab-separated data from SAP MB51 export.');
       return;
     }
 
-    const lines = csvInput.trim().split('\n');
-    const parsed: MB51TransactionItem[] = [];
+    setIsSubmitting(true);
+    setUploadWarnings([]);
+    try {
+      const resp = await mb51Service.bulkUpload({
+        csv_text: csvInput.trim(),
+        month: selectedMonth
+      });
 
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i].trim();
-      if (!line) continue;
-      if (
-        i === 0 &&
-        (line.toLowerCase().includes('mat') ||
-          line.toLowerCase().includes('mvt') ||
-          line.toLowerCase().includes('doc'))
-      ) {
-        continue;
+      const refreshed = await mb51Service.getTransactions({ month: selectedMonth });
+      if (refreshed && refreshed.length > 0) {
+        onUpdateMB51(refreshed);
       }
+      if (resp.warnings && resp.warnings.length > 0) {
+        setUploadWarnings(resp.warnings);
+      }
+      setIsUploadModalOpen(false);
+      setCsvInput('');
+    } catch (err: any) {
+      console.warn('Backend bulk upload failed, parsing locally as fallback:', err);
+      const lines = csvInput.trim().split('\n');
+      const parsed: MB51TransactionItem[] = [];
 
-      const delimiter = line.includes('\t') ? '\t' : ',';
-      const parts = line.split(delimiter).map((s) => s.replace(/^"|"$/g, '').trim());
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i].trim();
+        if (!line) continue;
+        if (
+          i === 0 &&
+          (line.toLowerCase().includes('mat') ||
+            line.toLowerCase().includes('mvt') ||
+            line.toLowerCase().includes('doc'))
+        ) {
+          continue;
+        }
 
-      // Format: Material Doc, Posting Date (YYYY-MM-DD), Movement Type (101/601), Part Number, Description, Quantity, UOM, SLOC, Vendor/Customer
-      if (parts.length >= 4) {
-        const matDoc = parts[0];
-        const date = parts.length >= 2 ? parts[1] : new Date().toISOString().slice(0, 10);
-        const mvt = parts.length >= 3 ? parts[2] : '101';
-        const partNo = parts.length >= 4 ? parts[3] : '';
-        const desc = parts.length >= 5 ? parts[4] : `Material ${partNo}`;
-        const qtyStr = parts.length >= 6 ? parts[5] : '100';
-        const qty = parseFloat(qtyStr.replace(/,/g, '')) || 0;
-        const uom = parts.length >= 7 ? parts[6] : 'PC';
-        const sloc = parts.length >= 8 ? parts[7] : 'SL01';
-        const partner = parts.length >= 9 ? parts[8] : '';
+        const delimiter = line.includes('\t') ? '\t' : ',';
+        const parts = line.split(delimiter).map((s) => s.replace(/^"|"$/g, '').trim());
 
-        if (partNo && qty > 0) {
-          const classification = deriveClassification(mvt, partNo);
-          const mappedWeek = getWeekForTransaction(
-            { postingDate: date, partNumber: partNo } as any,
-            weeks
-          );
+        if (parts.length >= 4) {
+          const matDoc = parts[0];
+          const date = parts.length >= 2 ? parts[1] : new Date().toISOString().slice(0, 10);
+          const mvt = parts.length >= 3 ? parts[2] : '101';
+          const partNo = parts.length >= 4 ? parts[3] : '';
+          const desc = parts.length >= 5 ? parts[4] : `Material ${partNo}`;
+          const qtyStr = parts.length >= 6 ? parts[5] : '100';
+          const qty = parseFloat(qtyStr.replace(/,/g, '')) || 0;
+          const uom = parts.length >= 7 ? parts[6] : 'PC';
+          const sloc = parts.length >= 8 ? parts[7] : 'SL01';
+          const partner = parts.length >= 9 ? parts[8] : '';
 
-          parsed.push({
-            id: `mb51-${Date.now()}-${i}`,
-            materialDocument: matDoc,
-            postingDate: date,
-            movementType: mvt,
-            partNumber: partNo,
-            materialDescription: desc,
-            quantity: qty,
-            uom,
-            storageLocation: sloc,
-            plant: '1001',
-            vendorOrCustomer: partner,
-            classification,
-            weekId: mappedWeek?.id
-          });
+          if (partNo && qty > 0) {
+            const classification = deriveClassification(mvt, partNo);
+            const mappedWeek = getWeekForTransaction(
+              { postingDate: date, partNumber: partNo } as any,
+              weeks
+            );
+
+            parsed.push({
+              id: `mb51-${Date.now()}-${i}`,
+              materialDocument: matDoc,
+              postingDate: date,
+              movementType: mvt,
+              partNumber: partNo,
+              materialDescription: desc,
+              quantity: qty,
+              uom,
+              storageLocation: sloc,
+              plant: '1001',
+              vendorOrCustomer: partner,
+              classification,
+              weekId: mappedWeek?.id
+            });
+          }
         }
       }
-    }
 
-    if (parsed.length === 0) {
-      alert('No valid MB51 records found. Check columns format.');
-      return;
-    }
+      if (parsed.length === 0) {
+        alert('No valid MB51 records found. Check columns format.');
+        return;
+      }
 
-    onUpdateMB51([...parsed, ...mb51List]);
-    setIsUploadModalOpen(false);
-    setCsvInput('');
+      onUpdateMB51([...parsed, ...mb51List]);
+      setIsUploadModalOpen(false);
+      setCsvInput('');
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
-  const handleDelete = (id: string) => {
+  const handleDelete = async (id: string) => {
     if (window.confirm('Delete this MB51 transaction record?')) {
+      try {
+        if (!id.startsWith('mb51-') && !isNaN(Number(id))) {
+          await mb51Service.deleteTransaction(id);
+        }
+      } catch (err) {
+        console.warn('Backend delete failed, removing locally:', err);
+      }
       onUpdateMB51(mb51List.filter((tx) => tx.id !== id));
     }
   };
@@ -307,6 +363,32 @@ export const MB51ReportManager: React.FC<MB51ReportManagerProps> = ({
           </button>
         </div>
       </div>
+
+      {/* Upload Notices / Duplicate Warnings */}
+      {uploadWarnings.length > 0 && (
+        <div className="p-4 bg-amber-50 border border-amber-300 rounded-xl text-amber-900 text-sm flex items-start gap-3 animate-in fade-in">
+          <AlertCircle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+          <div className="flex-1">
+            <div className="font-semibold mb-1">
+              Upload Completed with Warnings ({uploadWarnings.length}):
+            </div>
+            <ul className="list-disc pl-5 space-y-0.5 text-xs text-amber-800">
+              {uploadWarnings.slice(0, 5).map((w, idx) => (
+                <li key={idx}>{w}</li>
+              ))}
+              {uploadWarnings.length > 5 && (
+                <li>...and {uploadWarnings.length - 5} more warnings</li>
+              )}
+            </ul>
+          </div>
+          <button
+            onClick={() => setUploadWarnings([])}
+            className="text-xs font-semibold text-amber-700 hover:text-amber-900 px-2.5 py-1 bg-amber-100 hover:bg-amber-200 rounded transition-colors"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
 
       {/* SAP Movement Logic Specification Banner */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -694,8 +776,10 @@ export const MB51ReportManager: React.FC<MB51ReportManagerProps> = ({
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2 text-sm font-semibold text-white bg-blue-600 hover:bg-blue-700 rounded-lg shadow-sm transition-colors"
+                  disabled={isSubmitting}
+                  className="flex items-center gap-2 px-5 py-2 text-sm font-semibold text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-50 rounded-lg shadow-sm transition-colors"
                 >
+                  {isSubmitting && <Loader2 className="w-4 h-4 animate-spin" />}
                   Save Material Doc
                 </button>
               </div>
@@ -741,8 +825,10 @@ export const MB51ReportManager: React.FC<MB51ReportManagerProps> = ({
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2 text-sm font-semibold text-white bg-blue-600 hover:bg-blue-700 rounded-lg shadow-sm transition-colors"
+                  disabled={isSubmitting}
+                  className="flex items-center gap-2 px-5 py-2 text-sm font-semibold text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-50 rounded-lg shadow-sm transition-colors"
                 >
+                  {isSubmitting && <Loader2 className="w-4 h-4 animate-spin" />}
                   Process MB51 Dump
                 </button>
               </div>

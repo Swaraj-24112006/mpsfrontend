@@ -373,7 +373,21 @@ export const ExplodedBOMViewer: React.FC = () => {
                         </div>
                       </td>
                       <td className="py-3 px-4">
-                        {item.vendor_name ? (
+                        {item.suppliers && item.suppliers.length > 1 ? (
+                          <div className="space-y-1">
+                            <span className="inline-block text-[10px] font-bold px-1.5 py-0.5 rounded bg-amber-50 text-amber-700 border border-amber-200">
+                              Multi-Sourced ({item.suppliers.length})
+                            </span>
+                            <div className="space-y-0.5">
+                              {item.suppliers.map((s, idx) => (
+                                <div key={idx} className="flex items-center gap-1 text-xs">
+                                  <span className="font-medium text-slate-900">{s.vendor_name}</span>
+                                  <span className="font-mono text-[11px] text-slate-400">({s.vendor_code})</span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        ) : item.vendor_name ? (
                           <div>
                             <div className="font-medium text-slate-900 text-xs">{item.vendor_name}</div>
                             <div className="text-[11px] font-mono text-slate-400">{item.vendor_code}</div>
@@ -383,7 +397,16 @@ export const ExplodedBOMViewer: React.FC = () => {
                         )}
                       </td>
                       <td className="py-3 px-4">
-                        {item.buyer_name ? (
+                        {item.suppliers && item.suppliers.length > 1 ? (
+                          <div className="space-y-1">
+                            {Array.from(new Set(item.suppliers.map((s) => s.buyer_name).filter(Boolean))).map((b, idx) => (
+                              <div key={idx} className="text-xs text-slate-800 flex items-center gap-1">
+                                <UserCheck className="w-3.5 h-3.5 text-indigo-500 shrink-0" />
+                                <span>{b}</span>
+                              </div>
+                            ))}
+                          </div>
+                        ) : item.buyer_name ? (
                           <div className="text-xs text-slate-800 flex items-center gap-1">
                             <UserCheck className="w-3.5 h-3.5 text-indigo-500 shrink-0" />
                             <span>{item.buyer_name}</span>

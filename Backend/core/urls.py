@@ -13,7 +13,23 @@ from .views import (
     VendorBuyerDetailView,
     BOMCSVUploadView,
     VendorBuyerCSVUploadView,
+    WeekListCreateView,
+    WeekDetailView,
+    WeekAutoGenerateView,
+    MonthlyPlanListCreateView,
+    MonthlyPlanDetailView,
+    MonthlyPlanBulkUploadView,
+    MB51ListCreateView,
+    MB51DetailView,
+    MB51BulkUploadView,
+    MB51ExportCSVView,
+    StockListCreateView,
+    StockDetailView,
+    StockBulkUploadView,
+    StockExportCSVView,
 )
+
+
 
 urlpatterns = [
     path('health/', health_check, name='health_check'),
@@ -37,4 +53,28 @@ urlpatterns = [
     path('vendor-buyers/upload-csv/', VendorBuyerCSVUploadView.as_view(), name='vendor_buyer_upload_csv'),
     path('vendor-buyers/', VendorBuyerListCreateView.as_view(), name='vendor_buyer_list_create'),
     path('vendor-buyers/<int:pk>/', VendorBuyerDetailView.as_view(), name='vendor_buyer_detail'),
+
+    # Step 13: Week Definitions CRUD + Auto-Generate
+    path('weeks/auto-generate/', WeekAutoGenerateView.as_view(), name='week_auto_generate'),
+    path('weeks/', WeekListCreateView.as_view(), name='week_list_create'),
+    path('weeks/<str:pk>/', WeekDetailView.as_view(), name='week_detail'),
+
+    # Step 14: Monthly Plan CRUD
+    path('monthly-plans/', MonthlyPlanListCreateView.as_view(), name='monthly_plan_list_create'),
+    path('monthly-plans/<int:pk>/', MonthlyPlanDetailView.as_view(), name='monthly_plan_detail'),
+
+    # Step 15: Monthly Plan Bulk Upload
+    path('uploads/monthly-plan/', MonthlyPlanBulkUploadView.as_view(), name='monthly_plan_bulk_upload'),
+
+    # Step 17: MB51 Material Movement Transactions CRUD + Bulk Upload + CSV Export
+    path('mb51/', MB51ListCreateView.as_view(), name='mb51_list_create'),
+    path('mb51/<int:pk>/', MB51DetailView.as_view(), name='mb51_detail'),
+    path('uploads/mb51/', MB51BulkUploadView.as_view(), name='mb51_bulk_upload'),
+    path('exports/mb51-csv/', MB51ExportCSVView.as_view(), name='mb51_export_csv'),
+
+    # Step 19: Stock Report CRUD + Bulk Upload + CSV Export
+    path('stock/', StockListCreateView.as_view(), name='stock_list_create'),
+    path('stock/<int:pk>/', StockDetailView.as_view(), name='stock_detail'),
+    path('uploads/stock-report/', StockBulkUploadView.as_view(), name='stock_bulk_upload'),
+    path('exports/stock-csv/', StockExportCSVView.as_view(), name='stock_export_csv'),
 ]

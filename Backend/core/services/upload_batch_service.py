@@ -15,17 +15,19 @@ class UploadBatchService:
     def create_batch(
         cls,
         upload_type: str,
-        user: str,
-        file_name: str,
+        user: str = 'system',
+        file_name: str = '',
         minio_path: str = '',
-        total_rows: int = 0
+        total_rows: int = 0,
+        uploaded_by: Optional[str] = None
     ) -> UploadBatch:
         """
         Creates a new upload batch with PENDING status.
         """
+        actor = uploaded_by or user or 'system'
         batch = UploadBatch.objects.create(
             upload_type=upload_type,
-            uploaded_by=user or 'system',
+            uploaded_by=actor,
             file_name=file_name,
             minio_path=minio_path,
             status='PENDING',

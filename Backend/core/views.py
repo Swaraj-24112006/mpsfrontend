@@ -1,9 +1,12 @@
 import csv
 import io
 import math
+from collections import Counter
 from django.conf import settings
 from django.db import connection, transaction
 from django.db.models import Q
+from django.http import StreamingHttpResponse
+from django.utils import timezone
 from rest_framework import generics, status
 from rest_framework.views import APIView
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
@@ -17,21 +20,41 @@ from .models import (
     BOMMaster,
     VendorSuppliedComponent,
     VendorBuyerMaster,
-    UploadBatch
+    UploadBatch,
+    WeekDefinition,
+    MonthlyPlan,
+    MB51Transaction,
+    StockReport
 )
 from .serializers import (
     BOMFGHeaderSerializer,
     RMPMComponentSerializer,
     BOMMasterSerializer,
-    VendorBuyerSerializer
+    VendorBuyerSerializer,
+    WeekDefinitionSerializer,
+    MonthlyPlanSerializer,
+    MB51TransactionSerializer,
+    StockReportSerializer
 )
+import logging
+
+logger = logging.getLogger(__name__)
+
 from .pagination import StandardResultsSetPagination
 from .services import (
     StorageService,
     UploadBatchService,
     BOMService,
-    MaterialTypeService
+    MaterialTypeService,
+    WeekService,
+    ProrateService,
+    MonthlyPlanParser,
+    MB51ClassificationService,
+    WeekMappingService,
+    MB51Parser,
+    StockParser
 )
+
 
 
 @api_view(['GET'])
@@ -389,27 +412,23 @@ class ExplodedBOMView(APIView):
             is_active=True
         ).select_related('component').order_by('component__category', 'component_id')
 
-        # Check if stock_report table exists
+        # Query current stock from StockReport model (aggregating across storage locations)
         stock_map = {}
         try:
-            with connection.cursor() as cursor:
-                cursor.execute(
-                    "SELECT 1 FROM information_schema.tables WHERE table_name = 'stock_report'"
+            comp_codes = [b.component_id for b in bom_lines]
+            if comp_codes:
+                from django.db.models import Sum
+                stocks = (
+                    StockReport.objects.filter(part_number__in=comp_codes)
+                    .values('part_number')
+                    .annotate(total=Sum('unrestricted_stock'))
                 )
-                if cursor.fetchone():
-                    comp_codes = [b.component_id for b in bom_lines]
-                    if comp_codes:
-                        placeholders = ','.join(['%s'] * len(comp_codes))
-                        cursor.execute(
-                            f"SELECT component_code, unrestricted_stock FROM stock_report WHERE component_code IN ({placeholders})",
-                            comp_codes
-                        )
-                        for row in cursor.fetchall():
-                            stock_map[row[0]] = float(row[1])
-        except Exception:
-            pass
+                for s in stocks:
+                    stock_map[s['part_number']] = float(s['total'] or 0)
+        except Exception as e:
+            logger.warning(f"Error querying stock for ExplodedBOMView: {e}")
 
-        # Query vendor and buyer mappings for components
+        # Query vendor and buyer mappings for components (handles multiple vendors per component)
         comp_codes = [b.component_id for b in bom_lines]
         vendor_rels = VendorSuppliedComponent.objects.filter(
             component_id__in=comp_codes
@@ -417,14 +436,15 @@ class ExplodedBOMView(APIView):
 
         vendor_map = {}
         for rel in vendor_rels:
+            vb = rel.vendor_buyer
             if rel.component_id not in vendor_map:
-                vb = rel.vendor_buyer
-                vendor_map[rel.component_id] = {
-                    'vendor_code': vb.vendor_code,
-                    'vendor_name': vb.vendor_name,
-                    'buyer_name': vb.buyer_name,
-                    'lead_time_days': vb.lead_time_days,
-                }
+                vendor_map[rel.component_id] = []
+            vendor_map[rel.component_id].append({
+                'vendor_code': vb.vendor_code,
+                'vendor_name': vb.vendor_name,
+                'buyer_name': vb.buyer_name,
+                'lead_time_days': vb.lead_time_days,
+            })
 
         exploded_components = []
         for line in bom_lines:
@@ -433,12 +453,30 @@ class ExplodedBOMView(APIView):
             qty = float(line.qty)
             stock_covers = math.floor(current_stock / qty) if qty > 0 else 0
 
-            v_info = vendor_map.get(comp.component_code, {
-                'vendor_code': None,
-                'vendor_name': 'No Vendor Assigned',
-                'buyer_name': 'Unassigned',
-                'lead_time_days': line.lead_time_days_override or 7
-            })
+            suppliers = vendor_map.get(comp.component_code, [])
+            if suppliers:
+                v_codes = [s['vendor_code'] for s in suppliers]
+                v_names = [s['vendor_name'] for s in suppliers]
+                b_names = list(dict.fromkeys([s['buyer_name'] for s in suppliers if s['buyer_name']]))
+                lt_days = [s['lead_time_days'] for s in suppliers if s.get('lead_time_days') is not None]
+
+                v_info = {
+                    'vendor_code': ', '.join(v_codes),
+                    'vendor_name': ' / '.join(v_names),
+                    'buyer_name': ' / '.join(b_names) if b_names else 'Unassigned',
+                    'lead_time_days': min(lt_days) if lt_days else 7,
+                    'suppliers': suppliers,
+                    'is_multi_vendor': len(suppliers) > 1,
+                }
+            else:
+                v_info = {
+                    'vendor_code': None,
+                    'vendor_name': 'No Vendor Assigned',
+                    'buyer_name': 'Unassigned',
+                    'lead_time_days': line.lead_time_days_override or 7,
+                    'suppliers': [],
+                    'is_multi_vendor': False,
+                }
 
             exploded_components.append({
                 'id': line.id,
@@ -456,10 +494,12 @@ class ExplodedBOMView(APIView):
                 'shared_in_fgs_count': comp.shared_in_fgs_count,
                 'current_stock': current_stock,
                 'stock_covers_units': stock_covers,
-                'vendor_code': v_info.get('vendor_code'),
-                'vendor_name': v_info.get('vendor_name'),
-                'buyer_name': v_info.get('buyer_name'),
-                'lead_time_days': line.lead_time_days_override or v_info.get('lead_time_days', 7),
+                'vendor_code': v_info['vendor_code'],
+                'vendor_name': v_info['vendor_name'],
+                'buyer_name': v_info['buyer_name'],
+                'lead_time_days': line.lead_time_days_override or v_info['lead_time_days'],
+                'suppliers': v_info['suppliers'],
+                'is_multi_vendor': v_info['is_multi_vendor'],
             })
 
         return Response({
@@ -1055,6 +1095,1080 @@ class VendorBuyerCSVUploadView(APIView):
                 {"error": f"Failed to process Vendor CSV file: {str(ex)}"},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
+
+
+class WeekListCreateView(generics.ListCreateAPIView):
+    """
+    GET /api/weeks/?month=YYYY-MM
+    Lists week definitions, optionally filtered by month or search term.
+    Accepts ?paginate=false to return full unpaginated list.
+
+    POST /api/weeks/
+    Creates a single week definition.
+    Server-side computes days_count, working_days, and week_code.
+    """
+    serializer_class = WeekDefinitionSerializer
+    pagination_class = StandardResultsSetPagination
+    permission_classes = [AllowAny] if settings.DEBUG else [IsAuthenticated]
+
+    def get_queryset(self):
+        qs = WeekDefinition.objects.all().order_by('month', 'week_no')
+        month = self.request.query_params.get('month')
+        if month:
+            qs = qs.filter(month=month.strip())
+
+        search = self.request.query_params.get('search')
+        if search:
+            query = search.strip()
+            qs = qs.filter(
+                Q(week_code__icontains=query) |
+                Q(week_label__icontains=query) |
+                Q(month__icontains=query)
+            )
+        return qs
+
+    def paginate_queryset(self, queryset):
+        if self.request.query_params.get('paginate', '').lower() in ('false', '0', 'no'):
+            return None
+        return super().paginate_queryset(queryset)
+
+
+class WeekDetailView(generics.RetrieveUpdateDestroyAPIView):
+    """
+    GET /api/weeks/{id}/
+    Retrieves a single week definition by ID or week_code.
+
+    PATCH /api/weeks/{id}/
+    Updates fields (start_date, end_date, holiday_days, week_label).
+    Recalculates days_count and working_days.
+    Cascades reproration across all monthly_plan rows for the affected month.
+
+    DELETE /api/weeks/{id}/
+    Deletes the week definition and cascades reproration.
+    """
+    queryset = WeekDefinition.objects.all()
+    serializer_class = WeekDefinitionSerializer
+    permission_classes = [AllowAny] if settings.DEBUG else [IsAuthenticated]
+
+    def get_object(self):
+        lookup = self.kwargs.get('pk')
+        if lookup and not str(lookup).isdigit():
+            try:
+                return WeekDefinition.objects.get(week_code=lookup)
+            except WeekDefinition.DoesNotExist:
+                pass
+        return super().get_object()
+
+    def perform_update(self, serializer):
+        instance = serializer.save()
+        ProrateService.cascade_reprorate(instance.month)
+
+    def perform_destroy(self, instance):
+        month = instance.month
+        instance.delete()
+        ProrateService.cascade_reprorate(month)
+
+
+class WeekAutoGenerateView(APIView):
+    """
+    POST /api/weeks/auto-generate/
+    Auto-generates standard factory 4-week split for a given month or entire year.
+    Payload:
+    {
+        "month": "2026-08",          // Target month (YYYY-MM)
+        "year": "2026",               // Or target year (YYYY) for all 12 months
+        "overwrite": true             // Replace existing definitions (default true)
+    }
+    """
+    permission_classes = [AllowAny] if settings.DEBUG else [IsAuthenticated]
+
+    def post(self, request):
+        month = request.data.get('month')
+        year = request.data.get('year')
+        overwrite = request.data.get('overwrite', True)
+        if isinstance(overwrite, str):
+            overwrite = overwrite.lower() in ('true', '1', 'yes')
+
+        months_to_generate = []
+        if month:
+            months_to_generate.append(month.strip())
+        elif year:
+            try:
+                year_int = int(year)
+                for m in range(1, 13):
+                    months_to_generate.append(f"{year_int:04d}-{m:02d}")
+            except ValueError:
+                return Response(
+                    {"error": f"Invalid year '{year}'."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+        else:
+            return Response(
+                {"error": "Please provide either 'month' (YYYY-MM) or 'year' (YYYY)."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        created_objs = []
+        try:
+            with transaction.atomic():
+                for m in months_to_generate:
+                    if overwrite:
+                        WeekDefinition.objects.filter(month=m).delete()
+
+                    week_data_list = WeekService.get_standard_week_data_for_month(m)
+                    for w_data in week_data_list:
+                        week_obj, _ = WeekDefinition.objects.update_or_create(
+                            month=w_data['month'],
+                            week_no=w_data['week_no'],
+                            defaults={
+                                'week_code': w_data['week_code'],
+                                'week_label': w_data['week_label'],
+                                'start_date': w_data['start_date'],
+                                'end_date': w_data['end_date'],
+                                'days_count': w_data['days_count'],
+                                'holiday_days': w_data['holiday_days'],
+                                'working_days': w_data['working_days'],
+                            }
+                        )
+                        created_objs.append(week_obj)
+
+                    # Trigger cascade reproration for the month
+                    ProrateService.cascade_reprorate(m)
+
+            serializer = WeekDefinitionSerializer(created_objs, many=True)
+            return Response({
+                "message": f"Successfully generated {len(created_objs)} week definition(s) across {len(months_to_generate)} month(s).",
+                "count": len(created_objs),
+                "results": serializer.data
+            }, status=status.HTTP_200_OK)
+
+        except Exception as ex:
+            return Response(
+                {"error": f"Failed to auto-generate weeks: {str(ex)}"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+
+class MonthlyPlanListCreateView(generics.ListCreateAPIView):
+    """
+    GET /api/monthly-plans/?month=YYYY-MM&search=...
+    List monthly plans with optional month filter, search filter, and pagination.
+
+    POST /api/monthly-plans/
+    Create a new monthly plan. Validates fg_code starts with '7' and exists in bom_fg_header.
+    Auto-computes weekly_breakdown via ProrateService.prorate() based on working days.
+    """
+    queryset = MonthlyPlan.objects.select_related('fg').all()
+    serializer_class = MonthlyPlanSerializer
+    pagination_class = StandardResultsSetPagination
+    permission_classes = [AllowAny] if settings.DEBUG else [IsAuthenticated]
+
+    def get_queryset(self):
+        qs = MonthlyPlan.objects.select_related('fg').all()
+        month = self.request.query_params.get('month')
+        if month:
+            qs = qs.filter(month=month.strip())
+
+        search = self.request.query_params.get('search')
+        if search:
+            s = search.strip()
+            qs = qs.filter(
+                Q(fg__fg_code__icontains=s) |
+                Q(fg__fg_description__icontains=s) |
+                Q(customer_name__icontains=s)
+            )
+
+        return qs.order_by('fg__fg_code')
+
+    def paginate_queryset(self, queryset):
+        if self.request.query_params.get('paginate', '').lower() == 'false':
+            return None
+        return super().paginate_queryset(queryset)
+
+
+class MonthlyPlanDetailView(generics.RetrieveUpdateDestroyAPIView):
+    """
+    GET /api/monthly-plans/{id}/
+    Retrieve individual monthly plan.
+
+    PATCH /api/monthly-plans/{id}/
+    Update monthly plan target or notes. Recalculates weekly_breakdown if target changes.
+
+    DELETE /api/monthly-plans/{id}/
+    Hard delete of monthly plan.
+    """
+    queryset = MonthlyPlan.objects.select_related('fg').all()
+    serializer_class = MonthlyPlanSerializer
+    permission_classes = [AllowAny] if settings.DEBUG else [IsAuthenticated]
+
+
+class MonthlyPlanBulkUploadView(APIView):
+    """
+    POST /api/uploads/monthly-plan/
+    Bulk uploads monthly plan via CSV, Excel (.xlsx), or pasted text.
+    Payload:
+    - Multipart file: 'file'
+    - Or JSON / Form field: 'csv_content' / 'pasted_text'
+    - Target month: 'month' (e.g. '2026-08' - required in form data or query param)
+
+    Processing:
+    1. Validates that month is provided and that week_definition rows exist for that month (otherwise 400).
+    2. Uploads file to MinIO storage via StorageService.upload_file().
+    3. Initializes an UploadBatch audit record.
+    4. Parses rows via MonthlyPlanParser.parse(file_or_text, month).
+    5. For each valid row:
+       - Auto-creates/verifies parent BOMFGHeader.
+       - Derives weekly_breakdown via ProrateService.prorate(monthly_target, weeks).
+       - Upserts MonthlyPlan on (fg, month).
+    6. Calls UploadBatchService.complete() with imported and error counts.
+    7. Returns comprehensive import feedback.
+    """
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+    permission_classes = [AllowAny] if settings.DEBUG else [IsAuthenticated]
+
+    def post(self, request):
+        month = request.data.get('month') or request.query_params.get('month')
+        if not month:
+            return Response(
+                {"error": "Target 'month' parameter (format: YYYY-MM) is required."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        clean_month = str(month).strip()
+        parts = clean_month.split('-')
+        if len(parts) != 2 or not parts[0].isdigit() or not parts[1].isdigit():
+            return Response(
+                {"error": f"Invalid month format '{clean_month}'. Expected YYYY-MM (e.g. '2026-08')."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Check if week definitions exist for this month
+        weeks = list(WeekDefinition.objects.filter(month=clean_month).order_by('week_no'))
+        if not weeks:
+            return Response(
+                {
+                    "error": (
+                        f"No week definitions configured for month '{clean_month}'. "
+                        f"Please configure or auto-generate weeks in the 'Define Week No.' tab before uploading plans."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        file_obj = request.FILES.get('file')
+        if not file_obj:
+            raw_content = request.data.get('csv_content') or request.data.get('pasted_text')
+            if raw_content:
+                file_obj = io.BytesIO(raw_content.encode('utf-8'))
+                file_name = f"monthly_plan_{clean_month}.csv"
+            else:
+                return Response(
+                    {"error": "No file or text uploaded. Provide a file in 'file' field or text in 'csv_content' / 'pasted_text'."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+        else:
+            file_name = file_obj.name
+
+        # Verify allowed file extensions
+        ext = file_name.split('.')[-1].lower() if '.' in file_name else ''
+        if ext not in ('csv', 'xlsx', 'xlsm', 'txt'):
+            return Response(
+                {"error": f"Unsupported file type '.{ext}'. Supported formats: .csv, .xlsx, .txt."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # 1. Store original file in MinIO
+        try:
+            minio_path = StorageService.upload_file(
+                file_obj,
+                f"monthly_plan_uploads/{clean_month}/{file_name}"
+            )
+        except Exception as e:
+            logger.warning(f"StorageService upload fallback: {e}")
+            minio_path = f"fallback/{file_name}"
+
+        # 2. Create UploadBatch audit record
+        username = request.user.username if request.user and request.user.is_authenticated else 'system'
+        batch = UploadBatchService.create_batch(
+            upload_type='MONTHLY_PLAN',
+            user=username,
+            file_name=file_name,
+            minio_path=minio_path,
+            total_rows=0
+        )
+
+        # 3. Parse rows using MonthlyPlanParser
+        try:
+            parse_result = MonthlyPlanParser.parse(file_obj, clean_month)
+        except Exception as parse_ex:
+            UploadBatchService.fail(batch, f"Parsing error: {str(parse_ex)}")
+            return Response(
+                {"error": f"Failed to parse upload file: {str(parse_ex)}"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        valid_rows = parse_result.get('valid_rows', [])
+        error_rows = parse_result.get('error_rows', [])
+        total_rows = parse_result.get('total_rows', len(valid_rows) + len(error_rows))
+
+        batch.total_rows = total_rows
+        batch.save(update_fields=['total_rows'])
+
+        imported_plans = []
+
+        try:
+            with transaction.atomic():
+                for row in valid_rows:
+                    fg_code = row['fg_code']
+                    monthly_target = row['monthly_target']
+                    fg_description = row.get('fg_description') or ''
+                    customer_name = row.get('customer_name') or ''
+                    uom = row.get('uom') or 'PC'
+                    custom_notes = row.get('custom_notes') or ''
+
+                    # Auto-create or update parent BOMFGHeader
+                    fg_header, _ = BOMFGHeader.objects.get_or_create(
+                        fg_code=fg_code,
+                        defaults={
+                            'fg_description': fg_description or f"Product {fg_code}",
+                            'customer_segment': customer_name,
+                            'uom': uom,
+                            'active_bom_version': 'v1',
+                            'is_active': True,
+                        }
+                    )
+                    # If description was provided in CSV and existing header has placeholder, update it
+                    if fg_description and fg_header.fg_description.startswith('Product '):
+                        fg_header.fg_description = fg_description
+                        fg_header.save(update_fields=['fg_description'])
+
+                    # Compute weekly proration
+                    weekly_breakdown = ProrateService.prorate(monthly_target, weeks)
+
+                    # Upsert MonthlyPlan on (fg, month)
+                    plan, _ = MonthlyPlan.objects.update_or_create(
+                        fg=fg_header,
+                        month=clean_month,
+                        defaults={
+                            'monthly_target': monthly_target,
+                            'customer_name': customer_name or fg_header.customer_segment or '',
+                            'custom_notes': custom_notes,
+                            'uom': uom or fg_header.uom or 'PC',
+                            'weekly_breakdown': weekly_breakdown,
+                        }
+                    )
+                    imported_plans.append(plan)
+
+            # Mark batch completed
+            UploadBatchService.complete(
+                batch,
+                imported_rows=len(imported_plans),
+                error_rows=len(error_rows),
+                error_detail={"skipped_rows": error_rows} if error_rows else {}
+            )
+
+            serializer = MonthlyPlanSerializer(imported_plans, many=True)
+            return Response({
+                "message": f"Successfully processed monthly plan for {clean_month}.",
+                "batch_id": batch.id,
+                "month": clean_month,
+                "total_rows": total_rows,
+                "imported_rows": len(imported_plans),
+                "error_rows": len(error_rows),
+                "errors": error_rows,
+                "results": serializer.data
+            }, status=status.HTTP_200_OK)
+
+        except Exception as ex:
+            UploadBatchService.fail(batch, f"Database persistence error: {str(ex)}")
+            return Response(
+                {"error": f"Failed to persist monthly plan records: {str(ex)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+# ============================================================================
+# Step 17 — API: MB51 CRUD + Bulk Upload + CSV Export
+# ============================================================================
+
+class MB51ListCreateView(generics.ListCreateAPIView):
+    """
+    GET /api/mb51/
+    Filters:
+    - ?month=YYYY-MM
+    - ?week_code=w-YYYY-MM-0N
+    - ?movement_type=101|601
+    - ?part_number=...
+    - ?classification=FG_PRODUCTION_RECEIPT|RMPM_RECEIPT|FG_DISPATCH|OTHER
+    - ?date_from=YYYY-MM-DD
+    - ?date_to=YYYY-MM-DD
+    - ?search=...
+    - ?paginate=false
+
+    POST /api/mb51/
+    Single create endpoint.
+    Validates:
+    - quantity > 0
+    - movement_type IN ('101', '601')
+    - Auto-calls classify + map_to_week
+    """
+    serializer_class = MB51TransactionSerializer
+    pagination_class = StandardResultsSetPagination
+    permission_classes = [AllowAny] if settings.DEBUG else [IsAuthenticated]
+
+    def get_queryset(self):
+        qs = MB51Transaction.objects.all().select_related('week', 'upload_batch').order_by('-posting_date', '-id')
+
+        month = self.request.query_params.get('month')
+        if month:
+            clean_month = month.strip()
+            qs = qs.filter(Q(posting_date__startswith=clean_month) | Q(week__month=clean_month))
+
+        week_code = self.request.query_params.get('week_code')
+        if week_code:
+            qs = qs.filter(week_id=week_code.strip())
+
+        movement_type = self.request.query_params.get('movement_type')
+        if movement_type:
+            qs = qs.filter(movement_type=movement_type.strip())
+
+        part_number = self.request.query_params.get('part_number')
+        if part_number:
+            qs = qs.filter(part_number__icontains=part_number.strip())
+
+        classification = self.request.query_params.get('classification')
+        if classification:
+            qs = qs.filter(classification=classification.strip().upper())
+
+        date_from = self.request.query_params.get('date_from')
+        if date_from:
+            qs = qs.filter(posting_date__gte=date_from.strip())
+
+        date_to = self.request.query_params.get('date_to')
+        if date_to:
+            qs = qs.filter(posting_date__lte=date_to.strip())
+
+        search = self.request.query_params.get('search')
+        if search:
+            query = search.strip()
+            qs = qs.filter(
+                Q(material_document__icontains=query) |
+                Q(part_number__icontains=query) |
+                Q(material_description__icontains=query) |
+                Q(vendor_customer__icontains=query) |
+                Q(po_order_number__icontains=query)
+            )
+
+        return qs
+
+    def list(self, request, *args, **kwargs):
+        paginate = request.query_params.get('paginate', 'true').lower()
+        if paginate in ('false', '0', 'no'):
+            queryset = self.filter_queryset(self.get_queryset())
+            serializer = self.get_serializer(queryset, many=True)
+            return Response(serializer.data)
+        return super().list(request, *args, **kwargs)
+
+    def create(self, request, *args, **kwargs):
+        mvt = str(request.data.get('movement_type') or request.data.get('movementType') or '').strip()
+        if mvt not in ('101', '601'):
+            return Response(
+                {"movement_type": ["Single MB51 transaction creation only supports movement types '101' and '601'."]},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        return super().create(request, *args, **kwargs)
+
+
+class MB51DetailView(generics.RetrieveUpdateDestroyAPIView):
+    """
+    GET /api/mb51/{id}/
+    PATCH /api/mb51/{id}/
+    DELETE /api/mb51/{id}/ — hard delete
+    """
+    queryset = MB51Transaction.objects.all()
+    serializer_class = MB51TransactionSerializer
+    permission_classes = [AllowAny] if settings.DEBUG else [IsAuthenticated]
+
+    def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
+        doc_id = instance.material_document
+        self.perform_destroy(instance)
+        return Response(
+            {"message": f"MB51 material document '{doc_id}' deleted successfully."},
+            status=status.HTTP_200_OK
+        )
+
+
+class MB51BulkUploadView(APIView):
+    """
+    POST /api/uploads/mb51/
+    Accepts CSV / Excel / pasted text for MB51 material movement report:
+    1. Uploads file to MinIO storage (with local fallback)
+    2. Parses content with MB51Parser
+    3. Auto-computes classification and week mapping per row
+    4. Flags duplicate material_document values (warns, does not block)
+    5. Bulk inserts transactions
+    6. Completes UploadBatch audit log
+    """
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+    permission_classes = [AllowAny] if settings.DEBUG else [IsAuthenticated]
+
+    def post(self, request, *args, **kwargs):
+        file_obj = request.FILES.get('file')
+        csv_text = request.data.get('csv_text') or request.data.get('content')
+        month = request.query_params.get('month') or request.data.get('month')
+
+        if not file_obj and not csv_text:
+            return Response(
+                {"error": "Please provide a file (.xlsx, .csv) or pasted text in 'csv_text'."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        file_name = file_obj.name if file_obj else f"mb51_pasted_{timezone.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        user_name = request.user.username if (request.user and request.user.is_authenticated) else 'system'
+
+        # 1. Create upload batch
+        batch = UploadBatchService.create_batch(
+            upload_type='MB51_REPORT',
+            user=user_name,
+            file_name=file_name
+        )
+
+        # 2. Store file in MinIO / fallback
+        try:
+            storage_path = f"mb51_reports/{file_name}"
+            if file_obj:
+                minio_url = StorageService.upload_file(file_obj, path=storage_path)
+            else:
+                text_bytes = io.BytesIO(csv_text.encode('utf-8'))
+                minio_url = StorageService.upload_file(text_bytes, path=storage_path)
+            batch.minio_path = minio_url
+            batch.save(update_fields=['minio_path'])
+        except Exception as e:
+            logger.warning(f"Storage upload failed for batch #{batch.id}, continuing: {e}")
+
+        # 3. Fetch weeks
+        if month:
+            clean_month = month.strip()
+            weeks = list(WeekDefinition.objects.filter(month=clean_month).order_by('week_no'))
+        else:
+            weeks = list(WeekDefinition.objects.all().order_by('start_date'))
+
+        # 4. Parse content
+        content_to_parse = file_obj if file_obj else csv_text
+        parse_result = MB51Parser.parse(content_to_parse, weeks=weeks)
+
+        valid_rows = parse_result.get('valid_rows', [])
+        error_rows = parse_result.get('error_rows', [])
+        total_rows = parse_result.get('total_rows', len(valid_rows) + len(error_rows))
+
+        batch.total_rows = total_rows
+        batch.save(update_fields=['total_rows'])
+
+        if not valid_rows:
+            UploadBatchService.fail(
+                batch,
+                error_message=f"No valid MB51 rows found. {len(error_rows)} rows had errors."
+            )
+            return Response(
+                {
+                    "error": "No valid MB51 transaction rows could be parsed.",
+                    "batch_id": batch.id,
+                    "error_rows": error_rows,
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # 5. Check duplicate material_document values (warn, do not block)
+        doc_counts = Counter(r['material_document'] for r in valid_rows)
+        duplicate_docs = [doc for doc, count in doc_counts.items() if count > 1]
+
+        existing_docs = set(
+            MB51Transaction.objects.filter(
+                material_document__in=list(doc_counts.keys())
+            ).values_list('material_document', flat=True)
+        )
+
+        warnings = []
+        for doc in duplicate_docs:
+            warnings.append(f"Material document '{doc}' appears {doc_counts[doc]} times in uploaded content (imported).")
+        for doc in existing_docs:
+            if doc not in duplicate_docs:
+                warnings.append(f"Material document '{doc}' already exists in database (imported).")
+
+        # 6. Bulk create transactions
+        instances = []
+        for row in valid_rows:
+            cls_code = MB51ClassificationService.classify(row['movement_type'], row['part_number'])
+            mapped_week = WeekMappingService.map_to_week(row['posting_date'], weeks)
+            instances.append(
+                MB51Transaction(
+                    material_document=row['material_document'],
+                    posting_date=row['posting_date'],
+                    movement_type=row['movement_type'],
+                    part_number=row['part_number'],
+                    material_description=row['material_description'],
+                    quantity=row['quantity'],
+                    uom=row['uom'],
+                    storage_location=row['storage_location'],
+                    plant=row['plant'],
+                    vendor_customer=row['vendor_customer'],
+                    po_order_number=row['po_order_number'],
+                    classification=cls_code,
+                    week_id=mapped_week,
+                    upload_batch=batch,
+                )
+            )
+
+        try:
+            with transaction.atomic():
+                MB51Transaction.objects.bulk_create(instances, batch_size=500)
+
+            UploadBatchService.complete(
+                batch,
+                imported_rows=len(instances),
+                error_rows=len(error_rows),
+                error_detail={
+                    "warnings": warnings,
+                    "skipped_rows": error_rows
+                } if (warnings or error_rows) else {}
+            )
+
+            return Response(
+                {
+                    "message": f"Successfully processed {len(instances)} MB51 transaction records.",
+                    "batch_id": batch.id,
+                    "total_rows": total_rows,
+                    "imported_rows": len(instances),
+                    "error_rows": len(error_rows),
+                    "warnings": warnings,
+                    "skipped_rows": error_rows,
+                },
+                status=status.HTTP_201_CREATED
+            )
+        except Exception as exc:
+            logger.error(f"Bulk insert failed for MB51 batch {batch.id}: {exc}")
+            UploadBatchService.fail(batch, f"Database insert failed: {str(exc)}")
+            return Response(
+                {"error": f"Failed to save MB51 records: {str(exc)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class Echo:
+    """An object that implements just the write method of the file-like interface."""
+    def write(self, value):
+        return value
+
+
+class MB51ExportCSVView(APIView):
+    """
+    GET /api/exports/mb51-csv/?month=&week_code=&classification=
+    Streams filtered MB51 transactions as CSV using Django StreamingHttpResponse.
+    """
+    permission_classes = [AllowAny] if settings.DEBUG else [IsAuthenticated]
+
+    def get(self, request, *args, **kwargs):
+        qs = MB51Transaction.objects.all().order_by('-posting_date', '-id')
+
+        month = request.query_params.get('month')
+        if month:
+            clean_month = month.strip()
+            qs = qs.filter(Q(posting_date__startswith=clean_month) | Q(week__month=clean_month))
+
+        week_code = request.query_params.get('week_code')
+        if week_code:
+            qs = qs.filter(week_id=week_code.strip())
+
+        classification = request.query_params.get('classification')
+        if classification:
+            qs = qs.filter(classification=classification.strip().upper())
+
+        part_number = request.query_params.get('part_number')
+        if part_number:
+            qs = qs.filter(part_number__icontains=part_number.strip())
+
+        movement_type = request.query_params.get('movement_type')
+        if movement_type:
+            qs = qs.filter(movement_type=movement_type.strip())
+
+        pseudo_buffer = Echo()
+        writer = csv.writer(pseudo_buffer)
+
+        headers = [
+            'Material Document',
+            'Posting Date',
+            'Movement Type',
+            'Part Number',
+            'Material Description',
+            'Quantity',
+            'UOM',
+            'Storage Location',
+            'Plant',
+            'Vendor / Customer',
+            'PO / Order Number',
+            'Classification',
+            'Week Code'
+        ]
+
+        def row_generator():
+            yield writer.writerow(headers)
+            for item in qs.iterator(chunk_size=1000):
+                yield writer.writerow([
+                    item.material_document,
+                    item.posting_date.isoformat() if item.posting_date else '',
+                    item.movement_type,
+                    item.part_number,
+                    item.material_description,
+                    float(item.quantity),
+                    item.uom,
+                    item.storage_location,
+                    item.plant,
+                    item.vendor_customer,
+                    item.po_order_number,
+                    item.classification,
+                    item.week_code or ''
+                ])
+
+        timestamp = timezone.now().strftime('%Y%m%d_%H%M%S')
+        response = StreamingHttpResponse(row_generator(), content_type="text/csv")
+        response['Content-Disposition'] = f'attachment; filename="mb51_transactions_{timestamp}.csv"'
+        return response
+
+
+# ============================================================================
+# Step 19 — API: Stock Report CRUD + Bulk Upload + CSV Export
+# ============================================================================
+
+class StockListCreateView(generics.ListCreateAPIView):
+    """
+    GET /api/stock/
+    Filters:
+    - ?material_type=FG|RM|PM
+    - ?part_number=...
+    - ?storage_location=SL01
+    - ?search=... (searches part_number, material_description, storage_location)
+    - ?below_safety_stock=true (only records where unrestricted_stock < safety_stock)
+    - ?paginate=false
+
+    POST /api/stock/
+    Single create endpoint.
+    Validates:
+    - part_number not blank
+    - unrestricted_stock >= 0
+    - Computes material_type via MaterialTypeService.derive(part_number)
+    - Checks (part_number, storage_location) unique
+    """
+    serializer_class = StockReportSerializer
+    pagination_class = StandardResultsSetPagination
+    permission_classes = [AllowAny] if settings.DEBUG else [IsAuthenticated]
+
+    def get_queryset(self):
+        qs = StockReport.objects.all().order_by('part_number', 'storage_location')
+
+        material_type = self.request.query_params.get('material_type')
+        if material_type:
+            qs = qs.filter(material_type=material_type.strip().upper())
+
+        part_number = self.request.query_params.get('part_number')
+        if part_number:
+            qs = qs.filter(part_number__icontains=part_number.strip())
+
+        storage_location = self.request.query_params.get('storage_location')
+        if storage_location:
+            qs = qs.filter(storage_location__iexact=storage_location.strip())
+
+        below_safety = self.request.query_params.get('below_safety_stock')
+        if below_safety and below_safety.lower() in ('true', '1', 'yes'):
+            from django.db.models import F
+            qs = qs.filter(unrestricted_stock__lt=F('safety_stock'))
+
+        search = self.request.query_params.get('search')
+        if search:
+            query = search.strip()
+            qs = qs.filter(
+                Q(part_number__icontains=query) |
+                Q(material_description__icontains=query) |
+                Q(storage_location__icontains=query)
+            )
+
+        return qs
+
+    def list(self, request, *args, **kwargs):
+        paginate = request.query_params.get('paginate', 'true').lower()
+        if paginate in ('false', '0', 'no'):
+            queryset = self.filter_queryset(self.get_queryset())
+            serializer = self.get_serializer(queryset, many=True)
+            return Response(serializer.data)
+        return super().list(request, *args, **kwargs)
+
+
+class StockDetailView(generics.RetrieveUpdateDestroyAPIView):
+    """
+    GET /api/stock/{id}/
+    PATCH /api/stock/{id}/ — re-derives material_type if part_number changes
+    DELETE /api/stock/{id}/ — hard delete
+    """
+    queryset = StockReport.objects.all()
+    serializer_class = StockReportSerializer
+    permission_classes = [AllowAny] if settings.DEBUG else [IsAuthenticated]
+
+    def update(self, request, *args, **kwargs):
+        partial = kwargs.pop('partial', False)
+        instance = self.get_object()
+        old_part_number = instance.part_number
+
+        serializer = self.get_serializer(instance, data=request.data, partial=partial)
+        serializer.is_valid(raise_exception=True)
+        self.perform_update(serializer)
+
+        data = serializer.data
+        new_part_number = serializer.instance.part_number
+        if old_part_number != new_part_number:
+            data['info'] = (
+                f"Part number changed from '{old_part_number}' to '{new_part_number}'. "
+                f"Material type re-derived as '{serializer.instance.material_type}'."
+            )
+
+        return Response(data)
+
+    def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
+        part = instance.part_number
+        sloc = instance.storage_location
+        self.perform_destroy(instance)
+        return Response(
+            {"message": f"Stock record for '{part}' in '{sloc}' deleted successfully."},
+            status=status.HTTP_200_OK
+        )
+
+
+class StockBulkUploadView(APIView):
+    """
+    POST /api/uploads/stock-report/
+    Accepts CSV / Excel / pasted text for SAP MB52 Stock Report:
+    1. Uploads file to MinIO storage (with local fallback)
+    2. Parses content with StockParser
+    3. Derives material_type per row via MaterialTypeService
+    4. Upserts on (part_number, storage_location) when mode=replace (default)
+    5. INSERT when mode=append
+    6. Completes UploadBatch audit log
+    """
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+    permission_classes = [AllowAny] if settings.DEBUG else [IsAuthenticated]
+
+    def post(self, request, *args, **kwargs):
+        file_obj = request.FILES.get('file')
+        csv_text = request.data.get('csv_text') or request.data.get('content')
+        mode = (request.data.get('mode') or request.query_params.get('mode') or 'replace').strip().lower()
+
+        if not file_obj and not csv_text:
+            return Response(
+                {"error": "Please provide a file (.xlsx, .csv) or pasted text in 'csv_text'."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        file_name = file_obj.name if file_obj else f"stock_pasted_{timezone.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        user_name = request.user.username if (request.user and request.user.is_authenticated) else 'system'
+
+        # 1. Create upload batch
+        batch = UploadBatchService.create_batch(
+            upload_type='STOCK_REPORT',
+            user=user_name,
+            file_name=file_name
+        )
+
+        # 2. Store file in MinIO / fallback
+        try:
+            storage_path = f"stock_reports/{file_name}"
+            if file_obj:
+                minio_url = StorageService.upload_file(file_obj, path=storage_path)
+            else:
+                text_bytes = io.BytesIO(csv_text.encode('utf-8'))
+                minio_url = StorageService.upload_file(text_bytes, path=storage_path)
+            batch.minio_path = minio_url
+            batch.save(update_fields=['minio_path'])
+        except Exception as e:
+            logger.warning(f"Storage upload failed for stock batch #{batch.id}, continuing: {e}")
+
+        # 3. Parse content
+        content_to_parse = file_obj if file_obj else csv_text
+        parse_result = StockParser.parse(content_to_parse)
+
+        valid_rows = parse_result.get('valid_rows', [])
+        error_rows = parse_result.get('error_rows', [])
+        total_rows = parse_result.get('total_rows', len(valid_rows) + len(error_rows))
+
+        batch.total_rows = total_rows
+        batch.save(update_fields=['total_rows'])
+
+        if not valid_rows:
+            UploadBatchService.fail(
+                batch,
+                error_message=f"No valid stock rows found. {len(error_rows)} rows had errors."
+            )
+            return Response(
+                {
+                    "error": "No valid stock report rows could be parsed.",
+                    "batch_id": batch.id,
+                    "error_rows": error_rows,
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # 4. Process rows — upsert or insert based on mode
+        imported_count = 0
+        warnings = []
+
+        try:
+            with transaction.atomic():
+                for row in valid_rows:
+                    mat_type = MaterialTypeService.derive(row['part_number'])
+
+                    if mode == 'replace':
+                        # Upsert on (part_number, storage_location)
+                        StockReport.objects.update_or_create(
+                            part_number=row['part_number'],
+                            storage_location=row['storage_location'],
+                            defaults={
+                                'material_description': row['material_description'],
+                                'material_type': mat_type,
+                                'unrestricted_stock': row['unrestricted_stock'],
+                                'in_quality_insp': row['in_quality_insp'],
+                                'blocked': row['blocked'],
+                                'safety_stock': row['safety_stock'],
+                                'uom': row['uom'],
+                                'plant': row['plant'],
+                                'upload_batch': batch,
+                            }
+                        )
+                    else:
+                        # Append mode — always insert, check for duplicates
+                        existing = StockReport.objects.filter(
+                            part_number=row['part_number'],
+                            storage_location=row['storage_location']
+                        ).exists()
+                        if existing:
+                            warnings.append(
+                                f"Part '{row['part_number']}' at '{row['storage_location']}' "
+                                f"already exists (appended duplicate)."
+                            )
+                        StockReport.objects.create(
+                            part_number=row['part_number'],
+                            material_description=row['material_description'],
+                            material_type=mat_type,
+                            unrestricted_stock=row['unrestricted_stock'],
+                            in_quality_insp=row['in_quality_insp'],
+                            blocked=row['blocked'],
+                            safety_stock=row['safety_stock'],
+                            uom=row['uom'],
+                            storage_location=row['storage_location'],
+                            plant=row['plant'],
+                            upload_batch=batch,
+                        )
+
+                    imported_count += 1
+
+            UploadBatchService.complete(
+                batch,
+                imported_rows=imported_count,
+                error_rows=len(error_rows),
+                error_detail={
+                    "warnings": warnings,
+                    "skipped_rows": error_rows
+                } if (warnings or error_rows) else {}
+            )
+
+            return Response(
+                {
+                    "message": f"Successfully processed {imported_count} stock report record(s) (mode: {mode}).",
+                    "batch_id": batch.id,
+                    "total_rows": total_rows,
+                    "imported_rows": imported_count,
+                    "error_rows": len(error_rows),
+                    "mode": mode,
+                    "warnings": warnings,
+                    "skipped_rows": error_rows,
+                },
+                status=status.HTTP_201_CREATED
+            )
+        except Exception as exc:
+            logger.error(f"Stock report bulk insert failed for batch {batch.id}: {exc}")
+            UploadBatchService.fail(batch, f"Database insert failed: {str(exc)}")
+            return Response(
+                {"error": f"Failed to save stock records: {str(exc)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class StockExportCSVView(APIView):
+    """
+    GET /api/exports/stock-csv/?material_type=FG|RM|PM
+    Streams filtered stock report as CSV using Django StreamingHttpResponse.
+    """
+    permission_classes = [AllowAny] if settings.DEBUG else [IsAuthenticated]
+
+    def get(self, request, *args, **kwargs):
+        qs = StockReport.objects.all().order_by('part_number', 'storage_location')
+
+        material_type = request.query_params.get('material_type')
+        if material_type:
+            qs = qs.filter(material_type=material_type.strip().upper())
+
+        part_number = request.query_params.get('part_number')
+        if part_number:
+            qs = qs.filter(part_number__icontains=part_number.strip())
+
+        storage_location = request.query_params.get('storage_location')
+        if storage_location:
+            qs = qs.filter(storage_location__iexact=storage_location.strip())
+
+        below_safety = request.query_params.get('below_safety_stock')
+        if below_safety and below_safety.lower() in ('true', '1', 'yes'):
+            from django.db.models import F
+            qs = qs.filter(unrestricted_stock__lt=F('safety_stock'))
+
+        pseudo_buffer = Echo()
+        writer = csv.writer(pseudo_buffer)
+
+        headers = [
+            'Part Number',
+            'Material Description',
+            'Material Type',
+            'Unrestricted Stock',
+            'In Quality Inspection',
+            'Blocked',
+            'Safety Stock',
+            'UOM',
+            'Storage Location',
+            'Plant',
+            'Total Stock',
+            'Below Safety Stock'
+        ]
+
+        def row_generator():
+            yield writer.writerow(headers)
+            for item in qs.iterator(chunk_size=1000):
+                yield writer.writerow([
+                    item.part_number,
+                    item.material_description,
+                    item.material_type,
+                    float(item.unrestricted_stock),
+                    float(item.in_quality_insp),
+                    float(item.blocked),
+                    float(item.safety_stock),
+                    item.uom,
+                    item.storage_location,
+                    item.plant,
+                    float(item.total_stock),
+                    'Yes' if item.is_below_safety_stock else 'No'
+                ])
+
+        timestamp = timezone.now().strftime('%Y%m%d_%H%M%S')
+        response = StreamingHttpResponse(row_generator(), content_type="text/csv")
+        response['Content-Disposition'] = f'attachment; filename="stock_report_{timestamp}.csv"'
+        return response
+
 
 
 

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   Calendar,
   Plus,
@@ -11,9 +11,14 @@ import {
   AlertCircle,
   Download,
   Upload,
-  Layers
+  Layers,
+  Loader2,
+  RefreshCw,
+  XCircle
 } from 'lucide-react';
 import { WeekDefinition } from '../../types';
+import weekService, { dtoToFrontend } from '../../services/weekService';
+import { ApiError } from '../../services/api';
 
 interface WeekDefinitionManagerProps {
   weeks: WeekDefinition[];
@@ -31,6 +36,12 @@ export const WeekDefinitionManager: React.FC<WeekDefinitionManagerProps> = ({
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [editingWeek, setEditingWeek] = useState<WeekDefinition | null>(null);
 
+  // API State
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [successMsg, setSuccessMsg] = useState<string | null>(null);
+
   // Form state
   const [formMonth, setFormMonth] = useState(selectedMonth);
   const [formWeekNo, setFormWeekNo] = useState<number>(1);
@@ -38,6 +49,49 @@ export const WeekDefinitionManager: React.FC<WeekDefinitionManagerProps> = ({
   const [formEndDate, setFormEndDate] = useState('');
   const [formHolidayDays, setFormHolidayDays] = useState<number>(0);
   const [formLabel, setFormLabel] = useState('');
+
+  // Auto-dismiss messages
+  useEffect(() => {
+    if (successMsg) {
+      const t = setTimeout(() => setSuccessMsg(null), 4000);
+      return () => clearTimeout(t);
+    }
+  }, [successMsg]);
+
+  useEffect(() => {
+    if (error) {
+      const t = setTimeout(() => setError(null), 8000);
+      return () => clearTimeout(t);
+    }
+  }, [error]);
+
+  // Fetch weeks from backend API
+  const fetchWeeks = useCallback(async (monthToFetch = selectedMonth) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const dtoList = await weekService.list(monthToFetch);
+      if (dtoList.length > 0) {
+        const mapped = dtoList.map(dtoToFrontend);
+        const otherWeeks = weeks.filter((w) => w.month !== monthToFetch);
+        onUpdateWeeks([...otherWeeks, ...mapped]);
+      }
+    } catch (err: unknown) {
+      const apiErr = err as ApiError;
+      if (apiErr.status === 0 || apiErr.status === undefined) {
+        // Backend not reached, keep cached prop data
+      } else {
+        setError(apiErr.message || 'Failed to fetch week definitions from server');
+      }
+    } finally {
+      setLoading(false);
+    }
+  }, [selectedMonth, weeks, onUpdateWeeks]);
+
+  // Load from backend when month changes
+  useEffect(() => {
+    fetchWeeks(selectedMonth);
+  }, [selectedMonth]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const currentMonthWeeks = weeks
     .filter((w) => w.month === selectedMonth)
@@ -80,16 +134,16 @@ export const WeekDefinitionManager: React.FC<WeekDefinitionManagerProps> = ({
     setIsAddModalOpen(true);
   };
 
-  const handleSaveWeek = (e: React.FormEvent) => {
+  const handleSaveWeek = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!formStartDate || !formEndDate) {
-      alert('Please enter start and end dates');
+      setError('Please enter start and end dates');
       return;
     }
 
     const daysCount = calculateDays(formStartDate, formEndDate);
     if (daysCount <= 0) {
-      alert('End date must be on or after start date');
+      setError('End date must be on or after start date');
       return;
     }
 
@@ -99,160 +153,93 @@ export const WeekDefinitionManager: React.FC<WeekDefinitionManagerProps> = ({
         formStartDate
       ).toLocaleString('default', { month: 'short' })})`;
 
-    if (editingWeek) {
-      const updated = weeks.map((w) =>
-        w.id === editingWeek.id
-          ? {
-              ...w,
-              month: formMonth,
-              weekNo: formWeekNo,
-              weekLabel: label,
-              startDate: formStartDate,
-              endDate: formEndDate,
-              daysCount,
-              holidayDays: formHolidayDays,
-              workingDays: Math.max(1, daysCount - formHolidayDays)
-            }
-          : w
-      );
-      onUpdateWeeks(updated);
-    } else {
-      const newWeek: WeekDefinition = {
-        id: `w-${formMonth}-${String(formWeekNo).padStart(2, '0')}-${Date.now()}`,
-        month: formMonth,
-        weekNo: formWeekNo,
-        weekLabel: label,
-        startDate: formStartDate,
-        endDate: formEndDate,
-        daysCount,
-        holidayDays: formHolidayDays,
-        workingDays: Math.max(1, daysCount - formHolidayDays)
-      };
-      onUpdateWeeks([...weeks, newWeek]);
+    setSaving(true);
+    setError(null);
+    try {
+      if (editingWeek) {
+        await weekService.update(editingWeek.id, {
+          month: formMonth,
+          week_no: formWeekNo,
+          week_label: label,
+          start_date: formStartDate,
+          end_date: formEndDate,
+          holiday_days: formHolidayDays,
+        });
+        setSuccessMsg(`Week ${formWeekNo} updated successfully.`);
+      } else {
+        await weekService.create({
+          month: formMonth,
+          week_no: formWeekNo,
+          week_label: label,
+          start_date: formStartDate,
+          end_date: formEndDate,
+          holiday_days: formHolidayDays,
+        });
+        setSuccessMsg(`Week ${formWeekNo} created successfully.`);
+      }
+      setIsAddModalOpen(false);
+      await fetchWeeks(formMonth);
+    } catch (err: unknown) {
+      const apiErr = err as ApiError;
+      setError(apiErr.message || 'Failed to save week definition');
+    } finally {
+      setSaving(false);
     }
-    setIsAddModalOpen(false);
   };
 
-  const handleDeleteWeek = (id: string) => {
-    if (window.confirm('Delete this week definition?')) {
-      onUpdateWeeks(weeks.filter((w) => w.id !== id));
+  const handleDeleteWeek = async (id: string) => {
+    if (!window.confirm('Delete this week definition?')) return;
+    setSaving(true);
+    setError(null);
+    try {
+      await weekService.delete(id);
+      setSuccessMsg('Week definition deleted successfully.');
+      await fetchWeeks(selectedMonth);
+    } catch (err: unknown) {
+      const apiErr = err as ApiError;
+      setError(apiErr.message || 'Failed to delete week definition');
+    } finally {
+      setSaving(false);
     }
   };
 
   // Generate prompt sample: (01-09 Aug Week 1 [9d], 10-16 Aug Week 2 [7d], 17-23 Aug Week 3 [7d], 24-31 Aug Week 4 [8d])
-  const handleGeneratePromptStandard = () => {
-    const year = selectedMonth.split('-')[0];
-    const month = selectedMonth.split('-')[1];
-
-    const dInMonth = new Date(parseInt(year), parseInt(month), 0).getDate();
-
-    // Standard 4-week split with 9-7-7-rest pattern as requested by user
-    const generated: WeekDefinition[] = [
-      {
-        id: `w-${selectedMonth}-01`,
-        month: selectedMonth,
-        weekNo: 1,
-        weekLabel: `Week 1 (01-09 ${new Date(parseInt(year), parseInt(month) - 1).toLocaleString('default', { month: 'short' })})`,
-        startDate: `${selectedMonth}-01`,
-        endDate: `${selectedMonth}-09`,
-        daysCount: 9,
-        workingDays: 8
-      },
-      {
-        id: `w-${selectedMonth}-02`,
-        month: selectedMonth,
-        weekNo: 2,
-        weekLabel: `Week 2 (10-16 ${new Date(parseInt(year), parseInt(month) - 1).toLocaleString('default', { month: 'short' })})`,
-        startDate: `${selectedMonth}-10`,
-        endDate: `${selectedMonth}-16`,
-        daysCount: 7,
-        workingDays: 6
-      },
-      {
-        id: `w-${selectedMonth}-03`,
-        month: selectedMonth,
-        weekNo: 3,
-        weekLabel: `Week 3 (17-23 ${new Date(parseInt(year), parseInt(month) - 1).toLocaleString('default', { month: 'short' })})`,
-        startDate: `${selectedMonth}-17`,
-        endDate: `${selectedMonth}-23`,
-        daysCount: 7,
-        workingDays: 6
-      },
-      {
-        id: `w-${selectedMonth}-04`,
-        month: selectedMonth,
-        weekNo: 4,
-        weekLabel: `Week 4 (24-${dInMonth} ${new Date(parseInt(year), parseInt(month) - 1).toLocaleString('default', { month: 'short' })})`,
-        startDate: `${selectedMonth}-24`,
-        endDate: `${selectedMonth}-${String(dInMonth).padStart(2, '0')}`,
-        daysCount: dInMonth - 24 + 1,
-        workingDays: dInMonth - 24
-      }
-    ];
-
-    // Remove existing for this month and add new
-    const otherWeeks = weeks.filter((w) => w.month !== selectedMonth);
-    onUpdateWeeks([...otherWeeks, ...generated]);
+  const handleGeneratePromptStandard = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await weekService.autoGenerate({ month: selectedMonth, overwrite: true });
+      const mapped = res.results.map(dtoToFrontend);
+      const otherWeeks = weeks.filter((w) => w.month !== selectedMonth);
+      onUpdateWeeks([...otherWeeks, ...mapped]);
+      setSuccessMsg(`Standard 4-week split auto-generated for ${selectedMonth}.`);
+    } catch (err: unknown) {
+      const apiErr = err as ApiError;
+      setError(apiErr.message || 'Failed to auto-generate standard weeks');
+    } finally {
+      setLoading(false);
+    }
   };
 
   // Generate for entire year (e.g. 2026)
-  const handleGenerateFullYear = () => {
+  const handleGenerateFullYear = async () => {
     const year = selectedMonth.split('-')[0] || '2026';
-    const allYearWeeks: WeekDefinition[] = [];
-
-    for (let m = 1; m <= 12; m++) {
-      const monthStr = `${year}-${String(m).padStart(2, '0')}`;
-      const dInMonth = new Date(parseInt(year), m, 0).getDate();
-      const monthShort = new Date(parseInt(year), m - 1).toLocaleString('default', {
-        month: 'short'
-      });
-
-      allYearWeeks.push(
-        {
-          id: `w-${monthStr}-01`,
-          month: monthStr,
-          weekNo: 1,
-          weekLabel: `Week 1 (01-09 ${monthShort})`,
-          startDate: `${monthStr}-01`,
-          endDate: `${monthStr}-09`,
-          daysCount: 9,
-          workingDays: 8
-        },
-        {
-          id: `w-${monthStr}-02`,
-          month: monthStr,
-          weekNo: 2,
-          weekLabel: `Week 2 (10-16 ${monthShort})`,
-          startDate: `${monthStr}-10`,
-          endDate: `${monthStr}-16`,
-          daysCount: 7,
-          workingDays: 6
-        },
-        {
-          id: `w-${monthStr}-03`,
-          month: monthStr,
-          weekNo: 3,
-          weekLabel: `Week 3 (17-23 ${monthShort})`,
-          startDate: `${monthStr}-17`,
-          endDate: `${monthStr}-23`,
-          daysCount: 7,
-          workingDays: 6
-        },
-        {
-          id: `w-${monthStr}-04`,
-          month: monthStr,
-          weekNo: 4,
-          weekLabel: `Week 4 (24-${dInMonth} ${monthShort})`,
-          startDate: `${monthStr}-24`,
-          endDate: `${monthStr}-${String(dInMonth).padStart(2, '0')}`,
-          daysCount: dInMonth - 24 + 1,
-          workingDays: dInMonth - 24
-        }
-      );
+    if (!window.confirm(`Auto-generate standard 4-week splits for all 12 months of year ${year}?`)) {
+      return;
     }
-
-    onUpdateWeeks(allYearWeeks);
-    alert(`Successfully generated 48 week buckets for full year ${year}!`);
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await weekService.autoGenerate({ year, overwrite: true });
+      const mapped = res.results.map(dtoToFrontend);
+      onUpdateWeeks(mapped);
+      setSuccessMsg(`Successfully generated 48 week buckets for full year ${year}!`);
+    } catch (err: unknown) {
+      const apiErr = err as ApiError;
+      setError(apiErr.message || 'Failed to auto-generate full year weeks');
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleExportCSV = () => {
@@ -286,6 +273,21 @@ export const WeekDefinitionManager: React.FC<WeekDefinitionManagerProps> = ({
 
   return (
     <div className="space-y-6">
+      {/* Toast Messages */}
+      {successMsg && (
+        <div className="flex items-center gap-2 px-4 py-3 bg-emerald-50 border border-emerald-200 rounded-lg text-sm text-emerald-800 animate-in fade-in slide-in-from-top-2">
+          <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+          <span>{successMsg}</span>
+        </div>
+      )}
+      {error && (
+        <div className="flex items-center gap-2 px-4 py-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-800 animate-in fade-in">
+          <XCircle className="w-4 h-4 text-red-500 shrink-0" />
+          <span>{error}</span>
+          <button onClick={() => setError(null)} className="ml-auto text-red-400 hover:text-red-600"><XCircle className="w-3.5 h-3.5" /></button>
+        </div>
+      )}
+
       {/* Header Bar */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
         <div className="flex items-center gap-3">
@@ -302,8 +304,18 @@ export const WeekDefinitionManager: React.FC<WeekDefinitionManagerProps> = ({
 
         <div className="flex flex-wrap items-center gap-3">
           <button
+            onClick={() => fetchWeeks(selectedMonth)}
+            disabled={loading}
+            className="flex items-center gap-2 px-3 py-2 text-sm font-medium text-slate-600 bg-slate-50 border border-slate-300 rounded-lg hover:bg-slate-100 transition-colors disabled:opacity-50"
+            title="Refresh from server"
+          >
+            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin text-indigo-600' : ''}`} />
+            Refresh
+          </button>
+          <button
             onClick={handleGenerateFullYear}
-            className="flex items-center gap-2 px-3.5 py-2 text-sm font-medium text-indigo-700 bg-indigo-50 border border-indigo-200 rounded-lg hover:bg-indigo-100 transition-colors"
+            disabled={loading}
+            className="flex items-center gap-2 px-3.5 py-2 text-sm font-medium text-indigo-700 bg-indigo-50 border border-indigo-200 rounded-lg hover:bg-indigo-100 transition-colors disabled:opacity-50"
             title="Generate standard week buckets for all 12 months"
           >
             <Sparkles className="w-4 h-4 text-indigo-600" />

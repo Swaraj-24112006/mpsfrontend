@@ -5,9 +5,13 @@ from core.models import (
     RMPMComponentMaster,
     BOMMaster,
     VendorBuyerMaster,
-    VendorSuppliedComponent
+    VendorSuppliedComponent,
+    WeekDefinition,
+    MonthlyPlan
 )
 from core.services.bom_service import BOMService
+from core.services.week_service import WeekService
+from core.services.prorate_service import ProrateService
 
 
 class Command(BaseCommand):
@@ -309,4 +313,55 @@ class Command(BaseCommand):
             VendorSuppliedComponent.objects.bulk_create(junctions)
             self.stdout.write(f"  {'Created' if created else 'Updated'} Vendor: {vb.vendor_code} with {len(comps)} parts")
 
-        self.stdout.write(self.style.SUCCESS("Master Data seeded successfully!"))
+        # 5. Week Definitions (August & September 2026)
+        self.stdout.write("Seeding Week Definitions...")
+        for month in ['2026-08', '2026-09']:
+            week_data_list = WeekService.get_standard_week_data_for_month(month)
+            for w_data in week_data_list:
+                w_obj, created = WeekDefinition.objects.update_or_create(
+                    month=w_data['month'],
+                    week_no=w_data['week_no'],
+                    defaults={
+                        'week_code': w_data['week_code'],
+                        'week_label': w_data['week_label'],
+                        'start_date': w_data['start_date'],
+                        'end_date': w_data['end_date'],
+                        'days_count': w_data['days_count'],
+                        'holiday_days': w_data['holiday_days'],
+                        'working_days': w_data['working_days'],
+                    }
+                )
+                self.stdout.write(f"  {'Created' if created else 'Updated'} Week: {w_obj.week_code}")
+
+        # 6. Monthly Plans with Proration (August & September 2026)
+        self.stdout.write("Seeding Monthly Plans...")
+        plans_data = [
+            # August
+            ('7.06496.03.0', '2026-08', 10000, 'Tata Motors PV & EV', 'Harrier & Safari engine line schedule'),
+            ('7.09629.01.0', '2026-08', 8000, 'Mahindra & Mahindra Auto', 'Scorpio-N / XUV700 ramp-up'),
+            ('7.02551.11.0', '2026-08', 6200, 'Hyundai Motor India', '1.5L Turbo TGDi program'),
+            # September
+            ('7.06496.03.0', '2026-09', 10000, 'Tata Motors PV & EV', 'Harrier & Safari engine line schedule'),
+            ('7.09629.01.0', '2026-09', 8000, 'Mahindra & Mahindra Auto', 'Scorpio-N / XUV700 ramp-up'),
+            ('7.02551.11.0', '2026-09', 6200, 'Hyundai Motor India', '1.5L Turbo TGDi program'),
+        ]
+
+        for fg_code, month, target, customer, notes in plans_data:
+            fg_obj = BOMFGHeader.objects.get(fg_code=fg_code)
+            weeks = list(WeekDefinition.objects.filter(month=month).order_by('week_no'))
+            breakdown = ProrateService.prorate(target, weeks)
+
+            plan, created = MonthlyPlan.objects.update_or_create(
+                fg=fg_obj,
+                month=month,
+                defaults={
+                    'monthly_target': target,
+                    'customer_name': customer,
+                    'custom_notes': notes,
+                    'uom': 'PC',
+                    'weekly_breakdown': breakdown,
+                }
+            )
+            self.stdout.write(f"  {'Created' if created else 'Updated'} Monthly Plan: {fg_code} ({month}) -> {target} units (prorated across {len(breakdown)} weeks)")
+
+        self.stdout.write(self.style.SUCCESS("Master Data & Monthly Plans seeded successfully!"))

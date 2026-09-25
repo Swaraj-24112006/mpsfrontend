@@ -38,6 +38,9 @@ import { CommonComponentsDashboard } from './components/MasterData/CommonCompone
 import { VendorBuyerManager } from './components/MasterData/VendorBuyerManager';
 import bomService from './services/bomService';
 import vendorBuyerService from './services/vendorBuyerService';
+import { weekService, dtoToFrontend } from './services/weekService';
+import { monthlyPlanService } from './services/monthlyPlanService';
+import { mb51Service } from './services/mb51Service';
 
 // Monthly Upload Components
 import { WeekDefinitionManager } from './components/MonthlyUpload/WeekDefinitionManager';
@@ -225,6 +228,33 @@ export default function App() {
       .catch(() => {
         /* Non-fatal */
       });
+
+    // Hydrate weeks from API
+    weekService.list()
+      .then((items) => {
+        if (items && items.length > 0) {
+          setWeeks(items.map(dtoToFrontend));
+        }
+      })
+      .catch(() => {});
+
+    // Hydrate monthly plans from API
+    monthlyPlanService.getMonthlyPlans()
+      .then((plans) => {
+        if (plans && plans.length > 0) {
+          setMonthlyPlans(plans);
+        }
+      })
+      .catch(() => {});
+
+    // Hydrate MB51 transactions from API
+    mb51Service.getTransactions()
+      .then((txs) => {
+        if (txs && txs.length > 0) {
+          setMb51List(txs);
+        }
+      })
+      .catch(() => {});
   }, []);
 
   // Compute Critical RM Shortages Count for Badges

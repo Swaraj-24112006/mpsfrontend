@@ -41,7 +41,6 @@ export const FGHeaderManager: React.FC = () => {
 
   // Filters
   const [searchTerm, setSearchTerm] = useState('');
-  const [factoryFilter, setFactoryFilter] = useState('ALL');
   const [statusFilter, setStatusFilter] = useState<'ALL' | 'ACTIVE' | 'INACTIVE'>('ALL');
 
   // Modal State
@@ -89,7 +88,6 @@ export const FGHeaderManager: React.FC = () => {
     try {
       const filters: Record<string, string> = { page: String(page) };
       if (searchTerm.trim()) filters.search = searchTerm.trim();
-      if (factoryFilter !== 'ALL') filters.mini_factory = factoryFilter;
       if (statusFilter === 'ACTIVE') filters.is_active = 'true';
       if (statusFilter === 'INACTIVE') filters.is_active = 'false';
 
@@ -104,11 +102,11 @@ export const FGHeaderManager: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, [searchTerm, factoryFilter, statusFilter]);
+  }, [searchTerm, statusFilter]);
 
   useEffect(() => {
     fetchHeaders(1);
-  }, [searchTerm, factoryFilter, statusFilter]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [searchTerm, statusFilter]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleOpenModal = (item?: FGHeaderDTO) => {
     if (item) {
@@ -248,10 +246,6 @@ export const FGHeaderManager: React.FC = () => {
       const headers = [
         'FG Code',
         'FG Description',
-        'Mini Factory',
-        'Line',
-        'Customer Segment',
-        'Unit Price (INR)',
         'Active BOM Version',
         'UOM',
         'Is Active'
@@ -259,10 +253,6 @@ export const FGHeaderManager: React.FC = () => {
       const rows = allHeaders.map((h) => [
         `"${h.fg_code}"`,
         `"${h.fg_description.replace(/"/g, '""')}"`,
-        `"${h.mini_factory || ''}"`,
-        `"${h.line || ''}"`,
-        `"${h.customer_segment || ''}"`,
-        h.unit_price_inr,
         `"${h.active_bom_version}"`,
         `"${h.uom}"`,
         h.is_active ? 'Active' : 'Inactive'
@@ -331,7 +321,7 @@ export const FGHeaderManager: React.FC = () => {
           <div>
             <h1 className="text-xl font-bold text-slate-900">Finished Goods (FG) Header Master</h1>
             <p className="text-sm text-slate-500">
-              Manage parent finished goods, production lines, pricing, active BOM versions, and customer segments
+              Manage parent finished goods, active BOM versions, and operational status
             </p>
           </div>
         </div>
@@ -369,27 +359,16 @@ export const FGHeaderManager: React.FC = () => {
       {/* Toolbar / Filters */}
       <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex flex-col md:flex-row items-center justify-between gap-4">
         <div className="flex flex-wrap items-center gap-3 w-full md:w-auto">
-          <div className="relative flex-1 min-w-[260px]">
+          <div className="relative flex-1 min-w-[280px]">
             <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
             <input
               type="text"
-              placeholder="Search FG code (7...), description, line, segment..."
+              placeholder="Search FG code (7...), description..."
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
               className="w-full pl-9 pr-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
             />
           </div>
-
-          <select
-            value={factoryFilter}
-            onChange={(e) => setFactoryFilter(e.target.value)}
-            className="px-3 py-2 text-sm border border-slate-200 rounded-lg bg-white text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
-          >
-            <option value="ALL">All Mini Factories</option>
-            <option value="MF-1">MF-1</option>
-            <option value="MF-2">MF-2</option>
-            <option value="MF-3">MF-3</option>
-          </select>
 
           <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-lg">
             <button
@@ -441,10 +420,6 @@ export const FGHeaderManager: React.FC = () => {
               <tr className="bg-slate-50 border-b border-slate-200 text-xs font-semibold text-slate-600 uppercase tracking-wider">
                 <th className="py-3 px-4">FG Code</th>
                 <th className="py-3 px-4">Description</th>
-                <th className="py-3 px-4">Mini Factory</th>
-                <th className="py-3 px-4">Line</th>
-                <th className="py-3 px-4">Customer Segment</th>
-                <th className="py-3 px-4 text-right">Unit Price (INR)</th>
                 <th className="py-3 px-4 text-center">Active BOM Version</th>
                 <th className="py-3 px-4 text-center">Status</th>
                 <th className="py-3 px-4 text-center">Actions</th>
@@ -453,14 +428,14 @@ export const FGHeaderManager: React.FC = () => {
             <tbody className="divide-y divide-slate-200">
               {loading && data.length === 0 ? (
                 <tr>
-                  <td colSpan={9} className="py-12 text-center text-slate-400">
+                  <td colSpan={5} className="py-12 text-center text-slate-400">
                     <Loader2 className="w-6 h-6 animate-spin mx-auto mb-2 text-blue-600" />
                     Loading Finished Goods headers...
                   </td>
                 </tr>
               ) : data.length === 0 ? (
                 <tr>
-                  <td colSpan={9} className="py-12 text-center text-slate-500">
+                  <td colSpan={5} className="py-12 text-center text-slate-500">
                     <Boxes className="w-10 h-10 text-slate-300 mx-auto mb-2" />
                     No Finished Goods found matching your filter criteria.
                   </td>
@@ -474,26 +449,11 @@ export const FGHeaderManager: React.FC = () => {
                     <td className="py-3 px-4 font-mono font-bold text-blue-700">
                       {item.fg_code}
                     </td>
-                    <td className="py-3 px-4 font-medium text-slate-900 max-w-xs truncate">
+                    <td className="py-3 px-4 font-medium text-slate-900 max-w-md truncate">
                       {item.fg_description}
                     </td>
-                    <td className="py-3 px-4 text-slate-700">
-                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-slate-100 font-mono text-xs text-slate-800">
-                        <Factory className="w-3 h-3 text-slate-500" />
-                        {item.mini_factory || 'MF-1'}
-                      </span>
-                    </td>
-                    <td className="py-3 px-4 text-slate-600 text-xs">
-                      {item.line || '—'}
-                    </td>
-                    <td className="py-3 px-4 text-slate-600 text-xs">
-                      {item.customer_segment || 'OEM'}
-                    </td>
-                    <td className="py-3 px-4 text-right font-mono font-semibold text-slate-900">
-                      ₹{Number(item.unit_price_inr).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
-                    </td>
                     <td className="py-3 px-4 text-center">
-                      <span className="inline-block px-2 py-0.5 rounded-full text-xs font-mono font-bold bg-indigo-50 text-indigo-700 border border-indigo-200">
+                      <span className="inline-block px-2.5 py-0.5 rounded-full text-xs font-mono font-bold bg-indigo-50 text-indigo-700 border border-indigo-200">
                         {item.active_bom_version}
                       </span>
                     </td>
@@ -630,73 +590,17 @@ export const FGHeaderManager: React.FC = () => {
                 />
               </div>
 
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">
-                    Mini Factory
-                  </label>
-                  <select
-                    value={formData.mini_factory}
-                    onChange={(e) => setFormData({ ...formData, mini_factory: e.target.value })}
-                    className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white"
-                  >
-                    <option value="MF-1">MF-1 (Mini Factory 1)</option>
-                    <option value="MF-2">MF-2 (Mini Factory 2)</option>
-                    <option value="MF-3">MF-3 (Mini Factory 3)</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">
-                    Production Line
-                  </label>
-                  <input
-                    type="text"
-                    value={formData.line}
-                    onChange={(e) => setFormData({ ...formData, line: e.target.value })}
-                    placeholder="e.g. Line-1"
-                    className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500"
-                  />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-3 gap-3">
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">
-                    Customer Segment
-                  </label>
-                  <input
-                    type="text"
-                    value={formData.customer_segment}
-                    onChange={(e) => setFormData({ ...formData, customer_segment: e.target.value })}
-                    placeholder="OEM / Export"
-                    className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">
-                    Unit Price (INR)
-                  </label>
-                  <input
-                    type="number"
-                    min="0"
-                    step="0.01"
-                    value={formData.unit_price_inr}
-                    onChange={(e) => setFormData({ ...formData, unit_price_inr: parseFloat(e.target.value) || 0 })}
-                    className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 font-mono"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">
-                    Unit of Measure
-                  </label>
-                  <input
-                    type="text"
-                    value={formData.uom}
-                    onChange={(e) => setFormData({ ...formData, uom: e.target.value })}
-                    placeholder="PC / SET"
-                    className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 font-mono"
-                  />
-                </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  Unit of Measure (UOM)
+                </label>
+                <input
+                  type="text"
+                  value={formData.uom}
+                  onChange={(e) => setFormData({ ...formData, uom: e.target.value })}
+                  placeholder="PC / SET"
+                  className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 font-mono"
+                />
               </div>
 
               <div>

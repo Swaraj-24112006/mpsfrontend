@@ -239,9 +239,6 @@ export const ComponentManager: React.FC = () => {
         'Component Description',
         'Category',
         'UOM',
-        'Storage Location',
-        'Safety Stock',
-        'Is Critical',
         'Is Common Part',
         'Shared in FGs Count',
         'Is Active'
@@ -251,9 +248,6 @@ export const ComponentManager: React.FC = () => {
         `"${c.component_description.replace(/"/g, '""')}"`,
         `"${c.category}"`,
         `"${c.uom}"`,
-        `"${c.default_storage_location}"`,
-        c.safety_stock,
-        c.is_critical ? 'Yes' : 'No',
         c.is_common_part ? 'Yes' : 'No',
         c.shared_in_fgs_count,
         c.is_active ? 'Active' : 'Inactive'
@@ -310,7 +304,7 @@ export const ComponentManager: React.FC = () => {
           <div>
             <h1 className="text-xl font-bold text-slate-900">RM & PM Component Master</h1>
             <p className="text-sm text-slate-500">
-              Master catalog for Raw Materials & Packaging items, storage locations, safety stocks, and common part links
+              Master catalog for Raw Materials & Packaging items, common part tracking, and operational status
             </p>
           </div>
         </div>
@@ -348,11 +342,11 @@ export const ComponentManager: React.FC = () => {
       {/* Toolbar / Filters */}
       <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex flex-col md:flex-row items-center justify-between gap-4">
         <div className="flex flex-wrap items-center gap-3 w-full md:w-auto">
-          <div className="relative flex-1 min-w-[260px]">
+          <div className="relative flex-1 min-w-[280px]">
             <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
             <input
               type="text"
-              placeholder="Search component code, description, location..."
+              placeholder="Search component code, description..."
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
               className="w-full pl-9 pr-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-transparent"
@@ -453,7 +447,7 @@ export const ComponentManager: React.FC = () => {
         <div className="text-xs font-medium text-slate-500 flex items-center gap-2">
           {loading && <Loader2 className="w-3.5 h-3.5 animate-spin text-teal-600" />}
           <span>
-            Total <strong className="text-slate-900">{totalCount}</strong> Components registered
+            Total <strong className="text-slate-900">{totalCount}</strong> components registered
           </span>
         </div>
       </div>
@@ -468,10 +462,7 @@ export const ComponentManager: React.FC = () => {
                 <th className="py-3 px-4">Description</th>
                 <th className="py-3 px-4 text-center">Category</th>
                 <th className="py-3 px-4 text-center">UOM</th>
-                <th className="py-3 px-4">Storage Location</th>
-                <th className="py-3 px-4 text-right">Safety Stock</th>
                 <th className="py-3 px-4 text-center">Common Part?</th>
-                <th className="py-3 px-4 text-center">Critical</th>
                 <th className="py-3 px-4 text-center">Status</th>
                 <th className="py-3 px-4 text-center">Actions</th>
               </tr>
@@ -479,14 +470,14 @@ export const ComponentManager: React.FC = () => {
             <tbody className="divide-y divide-slate-200">
               {loading && data.length === 0 ? (
                 <tr>
-                  <td colSpan={10} className="py-12 text-center text-slate-400">
+                  <td colSpan={7} className="py-12 text-center text-slate-400">
                     <Loader2 className="w-6 h-6 animate-spin mx-auto mb-2 text-teal-600" />
                     Loading RM/PM components...
                   </td>
                 </tr>
               ) : data.length === 0 ? (
                 <tr>
-                  <td colSpan={10} className="py-12 text-center text-slate-500">
+                  <td colSpan={7} className="py-12 text-center text-slate-500">
                     <Package className="w-10 h-10 text-slate-300 mx-auto mb-2" />
                     No components found matching your filter criteria.
                   </td>
@@ -500,12 +491,12 @@ export const ComponentManager: React.FC = () => {
                     <td className="py-3 px-4 font-mono font-bold text-teal-700">
                       {item.component_code}
                     </td>
-                    <td className="py-3 px-4 font-medium text-slate-900 max-w-xs truncate">
+                    <td className="py-3 px-4 font-medium text-slate-900 max-w-md truncate">
                       {item.component_description}
                     </td>
                     <td className="py-3 px-4 text-center">
                       <span
-                        className={`inline-block px-2 py-0.5 rounded text-xs font-semibold ${
+                        className={`inline-block px-2.5 py-0.5 rounded text-xs font-semibold ${
                           item.category === 'PM'
                             ? 'bg-purple-50 text-purple-700 border border-purple-200'
                             : 'bg-blue-50 text-blue-700 border border-blue-200'
@@ -517,30 +508,14 @@ export const ComponentManager: React.FC = () => {
                     <td className="py-3 px-4 text-center font-mono text-xs text-slate-600">
                       {item.uom}
                     </td>
-                    <td className="py-3 px-4 text-slate-700 font-mono text-xs">
-                      {item.default_storage_location}
-                    </td>
-                    <td className="py-3 px-4 text-right font-mono font-semibold text-slate-900">
-                      {Number(item.safety_stock).toLocaleString()}
-                    </td>
                     <td className="py-3 px-4 text-center">
                       {item.is_common_part ? (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold bg-indigo-50 text-indigo-700 border border-indigo-200">
+                        <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-indigo-50 text-indigo-700 border border-indigo-200">
                           <Share2 className="w-3 h-3" />
                           Shared in {item.shared_in_fgs_count} FGs
                         </span>
                       ) : (
                         <span className="text-xs text-slate-400 font-medium">Single FG</span>
-                      )}
-                    </td>
-                    <td className="py-3 px-4 text-center">
-                      {item.is_critical ? (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-semibold bg-rose-50 text-rose-700 border border-rose-200">
-                          <ShieldAlert className="w-3 h-3" />
-                          Critical
-                        </span>
-                      ) : (
-                        <span className="text-xs text-slate-400">Standard</span>
                       )}
                     </td>
                     <td className="py-3 px-4 text-center">
@@ -671,59 +646,21 @@ export const ComponentManager: React.FC = () => {
                 />
               </div>
 
-              <div className="grid grid-cols-3 gap-3">
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">
-                    UOM
-                  </label>
-                  <input
-                    type="text"
-                    value={formData.uom}
-                    onChange={(e) => setFormData({ ...formData, uom: e.target.value })}
-                    placeholder="PC / KG"
-                    className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-teal-500 font-mono"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">
-                    Storage Location
-                  </label>
-                  <input
-                    type="text"
-                    value={formData.default_storage_location}
-                    onChange={(e) => setFormData({ ...formData, default_storage_location: e.target.value })}
-                    placeholder="SL01"
-                    className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-teal-500 font-mono"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">
-                    Safety Stock
-                  </label>
-                  <input
-                    type="number"
-                    min="0"
-                    value={formData.safety_stock}
-                    onChange={(e) => setFormData({ ...formData, safety_stock: parseInt(e.target.value) || 0 })}
-                    className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-teal-500 font-mono"
-                  />
-                </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  Unit of Measure (UOM)
+                </label>
+                <input
+                  type="text"
+                  value={formData.uom}
+                  onChange={(e) => setFormData({ ...formData, uom: e.target.value })}
+                  placeholder="PC / KG"
+                  className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-teal-500 font-mono"
+                />
               </div>
 
-              <div className="grid grid-cols-2 gap-4 pt-2">
-                <label className="flex items-center gap-2 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={formData.is_critical}
-                    onChange={(e) => setFormData({ ...formData, is_critical: e.target.checked })}
-                    className="w-4 h-4 text-teal-600 rounded border-slate-300 focus:ring-teal-500"
-                  />
-                  <span className="text-xs font-medium text-slate-700">
-                    Critical Part (Triggers line stop if depleted)
-                  </span>
-                </label>
-
-                <label className="flex items-center gap-2 cursor-pointer">
+              <div>
+                <label className="flex items-center gap-2 cursor-pointer pt-2">
                   <input
                     type="checkbox"
                     checked={formData.is_active}
@@ -731,7 +668,7 @@ export const ComponentManager: React.FC = () => {
                     className="w-4 h-4 text-teal-600 rounded border-slate-300 focus:ring-teal-500"
                   />
                   <span className="text-xs font-medium text-slate-700">
-                    Active Component
+                    Active Component in Master Schedule
                   </span>
                 </label>
               </div>
