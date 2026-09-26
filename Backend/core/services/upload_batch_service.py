@@ -74,17 +74,20 @@ class UploadBatchService:
     def fail(
         cls,
         batch: UploadBatch,
-        error: Union[str, Dict[str, Any]]
+        error: Optional[Union[str, Dict[str, Any]]] = None,
+        error_message: Optional[str] = None
     ) -> UploadBatch:
         """
         Marks batch as FAILED and records the error details.
+        Accepts either `error` or `error_message` for consistency across callers.
         """
+        err_val = error_message if error_message is not None else (error or "Batch processing failed")
         batch.status = 'FAILED'
-        if isinstance(error, dict):
-            batch.error_detail = error
+        if isinstance(err_val, dict):
+            batch.error_detail = err_val
         else:
-            batch.error_detail = {'error': str(error)}
+            batch.error_detail = {'error': str(err_val)}
 
         batch.save(update_fields=['status', 'error_detail'])
-        logger.warning(f"[UploadBatchService] Batch #{batch.id} failed: {error}")
+        logger.warning(f"[UploadBatchService] Batch #{batch.id} failed: {err_val}")
         return batch

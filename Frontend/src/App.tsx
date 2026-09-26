@@ -33,7 +33,6 @@ import { Sidebar, SubViewTab } from './components/Sidebar';
 import { BOMMasterManager } from './components/MasterData/BOMMasterManager';
 import { FGHeaderManager } from './components/MasterData/FGHeaderManager';
 import { ComponentManager } from './components/MasterData/ComponentManager';
-import { ExplodedBOMViewer } from './components/MasterData/ExplodedBOMViewer';
 import { CommonComponentsDashboard } from './components/MasterData/CommonComponentsDashboard';
 import { VendorBuyerManager } from './components/MasterData/VendorBuyerManager';
 import bomService from './services/bomService';
@@ -68,6 +67,7 @@ export default function App() {
   });
   const [activeSubView, setActiveSubView] = useState<SubViewTab>(() => {
     const saved = localStorage.getItem('sap_active_subview');
+    if (saved === 'master_exploded_bom') return 'master_bom';
     return (saved as SubViewTab) || 'monday_review_cockpit';
   });
 
@@ -532,12 +532,7 @@ export default function App() {
               <ComponentManager />
             )}
 
-            {/* View 7d: Master Data - Exploded BOM & Stock Trace */}
-            {activeSubView === 'master_exploded_bom' && (
-              <ExplodedBOMViewer />
-            )}
-
-            {/* View 7e: Master Data - Common Components Matrix */}
+            {/* View 7d: Master Data - Common Components Matrix */}
             {activeSubView === 'master_common_components' && (
               <CommonComponentsDashboard />
             )}

@@ -121,7 +121,7 @@ export const mb51Service = {
    * Delete a single MB51 transaction by ID
    */
   async deleteTransaction(id: number | string): Promise<{ message: string }> {
-    return api.delete<{ message: string }>(`/mb51/${id}/`);
+    return api.del<{ message: string }>(`/mb51/${id}/`);
   },
 
   /**

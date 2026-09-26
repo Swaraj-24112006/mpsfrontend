@@ -3,7 +3,7 @@ import io
 import re
 import logging
 from decimal import Decimal, InvalidOperation
-from typing import Union, BinaryIO, List, Dict, Any, Optional
+from typing import Union, BinaryIO, List, Dict, Any, Optional, Tuple
 import openpyxl
 
 from core.services.week_mapping_service import WeekMappingService
@@ -153,7 +153,7 @@ class MB51Parser:
         return rows
 
     @classmethod
-    def _inspect_header(cls, first_row: List[str]) -> (bool, Optional[Dict[str, int]]):
+    def _inspect_header(cls, first_row: List[str]) -> Tuple[bool, Optional[Dict[str, int]]]:
         """
         Determines whether the first row is a header row, and maps column names to indices.
         Per specification: skip header if first cell lowercased contains mat/mvt/doc.
@@ -225,7 +225,7 @@ class MB51Parser:
         row: List[str],
         header_map: Optional[Dict[str, int]],
         row_index: int
-    ) -> (Dict[str, Any], Optional[str]):
+    ) -> Tuple[Dict[str, Any], Optional[str]]:
         """
         Parses a single row using either the header map or positional fallback.
         """

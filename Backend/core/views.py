@@ -1668,7 +1668,7 @@ class MB51BulkUploadView(APIView):
         if not valid_rows:
             UploadBatchService.fail(
                 batch,
-                error_message=f"No valid MB51 rows found. {len(error_rows)} rows had errors."
+                error=f"No valid MB51 rows found. {len(error_rows)} rows had errors."
             )
             return Response(
                 {
@@ -2005,7 +2005,7 @@ class StockBulkUploadView(APIView):
         if not valid_rows:
             UploadBatchService.fail(
                 batch,
-                error_message=f"No valid stock rows found. {len(error_rows)} rows had errors."
+                error=f"No valid stock rows found. {len(error_rows)} rows had errors."
             )
             return Response(
                 {

@@ -1135,7 +1135,6 @@ export const BOMMasterManager: React.FC<BOMMasterManagerProps> = ({
                   <li><strong>FG Headers Tab:</strong> Finished Goods (code starting with 7) are automatically created or updated.</li>
                   <li><strong>RM/PM Components Tab:</strong> Component codes are automatically registered as RM or PM.</li>
                   <li><strong>Common Matrix Tab:</strong> Multi-FG sharing is instantly recalculated across the entire factory.</li>
-                  <li><strong>Exploded BOM Tab:</strong> Live explosion trees with stock coverage are immediately available.</li>
                 </ul>
               </div>
 

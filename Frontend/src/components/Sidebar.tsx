@@ -25,7 +25,6 @@ import {
   History,
   BarChart3,
   Package,
-  GitFork,
   Share2
 } from 'lucide-react';
 
@@ -43,7 +42,6 @@ export type SubViewTab =
   | 'master_bom'
   | 'master_fg_headers'
   | 'master_components'
-  | 'master_exploded_bom'
   | 'master_common_components'
   | 'master_vendor_buyer'
   | 'audit_log';
@@ -447,19 +445,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
               </button>
 
               <button
-                onClick={() => onSelectSubView('master_exploded_bom')}
-                className={`w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-xs font-medium transition-colors ${
-                  activeSubView === 'master_exploded_bom'
-                    ? 'bg-amber-600 text-white font-semibold shadow-sm'
-                    : 'text-slate-300 hover:text-white hover:bg-slate-800/60'
-                }`}
-                title="Exploded BOM & Stock Trace"
-              >
-                <GitFork className="w-4 h-4 shrink-0 text-amber-400" />
-                {!isCollapsed && <span>4. Exploded BOM & Stock Trace</span>}
-              </button>
-
-              <button
                 onClick={() => onSelectSubView('master_common_components')}
                 className={`w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-xs font-medium transition-colors ${
                   activeSubView === 'master_common_components'
@@ -469,7 +454,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 title="Common Components Matrix"
               >
                 <Share2 className="w-4 h-4 shrink-0 text-amber-400" />
-                {!isCollapsed && <span>5. Common Parts Matrix</span>}
+                {!isCollapsed && <span>4. Common Parts Matrix</span>}
               </button>
 
               <button
@@ -482,7 +467,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 title="Vendor and Buyer Relationship Master"
               >
                 <Users className="w-4 h-4 shrink-0 text-amber-400" />
-                {!isCollapsed && <span>6. Vendor & Buyer Master</span>}
+                {!isCollapsed && <span>5. Vendor & Buyer Master</span>}
               </button>
             </div>
           )}

@@ -145,6 +145,10 @@ export const api = {
     return request<T>('DELETE', path);
   },
 
+  delete<T>(path: string): Promise<T> {
+    return request<T>('DELETE', path);
+  },
+
   async upload<T>(path: string, formData: FormData): Promise<T> {
     const url = `${API_BASE_URL}${path}`;
     const headers: Record<string, string> = {
